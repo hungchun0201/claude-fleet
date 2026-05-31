@@ -100,6 +100,13 @@ Write is a full snapshot, each Edit is a red/green diff.
 | Close | SIGTERM |
 | Export | export a conversation doc (timeline + plan history + skill/memory summary) |
 
+> **Focus setup (macOS).** Focus works out of the box on Terminal.app and iTerm2 —
+> including when your sessions run inside **tmux** (the bundled
+> [`scripts/focus-tty.sh`](scripts/focus-tty.sh) maps the process tty → the owning
+> terminal tab → raises it). To customize for another terminal or window manager,
+> drop an executable `~/.claude/focus-tty.sh` taking a `<tty>` arg; it takes
+> precedence over the bundled default.
+
 ## Architecture
 
 Single-file frontend (Alpine.js + Tailwind via CDN — no npm). The Python backend

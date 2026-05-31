@@ -13,23 +13,65 @@ from typing import Optional
 from .sessions import CLAUDE_HOME, find_window
 from .transcripts import timeline, extract_plan_history, extract_skills_used, extract_memory_ops
 
-FOCUS_SCRIPT = CLAUDE_HOME / "focus-tty.sh"
+# Focus shim resolution: a user override at ~/.claude/focus-tty.sh wins; otherwise
+# the bundled cross-setup default (Terminal.app / iTerm2 / tmux) shipped with the repo.
+_USER_FOCUS_SCRIPT = CLAUDE_HOME / "focus-tty.sh"
+_BUNDLED_FOCUS_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "focus-tty.sh"
+
+
+def _resolve_focus_script() -> Optional[Path]:
+    if _USER_FOCUS_SCRIPT.exists():
+        return _USER_FOCUS_SCRIPT
+    if _BUNDLED_FOCUS_SCRIPT.exists():
+        return _BUNDLED_FOCUS_SCRIPT
+    return None
 
 
 def focus_terminal(tty: str) -> dict:
-    """Activate the iTerm2/Terminal.app tab that owns `tty` via the existing shim."""
+    """Activate the terminal tab that owns `tty`.
+
+    Prefers a user override at ~/.claude/focus-tty.sh; falls back to the bundled
+    scripts/focus-tty.sh, which handles plain Terminal.app / iTerm2 tabs and tmux
+    panes on macOS out of the box.
+    """
     if not tty:
         return {"ok": False, "error": "no tty"}
-    if not FOCUS_SCRIPT.exists():
-        return {"ok": False, "error": f"missing {FOCUS_SCRIPT}"}
+    script = _resolve_focus_script()
+    if script is None:
+        return {
+            "ok": False,
+            "error": f"no focus-tty.sh found (looked at {_USER_FOCUS_SCRIPT} and {_BUNDLED_FOCUS_SCRIPT})",
+        }
+    # Direct exec respects the script's own shebang (matches the original behavior
+    # and any user override). If the +x bit was lost on an odd checkout, retry via
+    # bash (covers bash/POSIX scripts; a non-bash override should keep its +x).
+    # The whole thing is shielded so focus_terminal NEVER raises — a TimeoutExpired
+    # (e.g. a blocking macOS Automation prompt) or a missing `bash` must return the
+    # structured error, not bubble up as a 500 in the request handler.
     try:
-        proc = subprocess.run(
-            [str(FOCUS_SCRIPT), tty],
-            capture_output=True, text=True, timeout=10,
-        )
+        try:
+            proc = subprocess.run(
+                [str(script), tty],
+                capture_output=True, text=True, timeout=10,
+            )
+        except PermissionError:
+            proc = subprocess.run(
+                ["bash", str(script), tty],
+                capture_output=True, text=True, timeout=10,
+            )
+    except subprocess.TimeoutExpired:
+        # stable contract: the child (e.g. a blocking Automation prompt) was killed
+        return {"ok": False, "error": "focus timed out after 10s", "code": None}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr}
+    # `code` lets the UI distinguish the script's exit codes (3 detached / 4 no-tab
+    # / 5 permission-denied / 6 unsupported) instead of a generic failure.
+    return {
+        "ok": proc.returncode == 0,
+        "code": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
 
 
 _FORK_APPLESCRIPT_ITERM = '''

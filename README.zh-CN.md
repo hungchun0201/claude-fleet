@@ -87,6 +87,11 @@ Plan 版本历史：一个 session 通常迭代 5-14 次 plan，每次 Write 是
 | Close | SIGTERM |
 | Export | 导出对话文档（带 timeline + plan 历史 + skill/memory 摘要）|
 
+> **Focus 设置（macOS）。** Focus 开箱即用，支持 Terminal.app 和 iTerm2——包括 session 跑在
+> **tmux** 里的情况（自带的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 会把进程 tty → 所属终端
+> tab → 切过去）。想换别的终端 / 窗口管理器，放一个可执行的 `~/.claude/focus-tty.sh`（接收一个
+> `<tty>` 参数）即可，它优先于自带默认。
+
 ## 架构
 
 单文件前端（Alpine.js + Tailwind CDN，不需要 npm），Python 后端只读 `~/.claude/` 和 `~/.codex/`，不改任何 agent 状态。
