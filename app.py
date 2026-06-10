@@ -49,9 +49,16 @@ def _enriched_snapshot() -> dict:
                 w["first_input"] = first[:100]
         if tp:
             w["current_task"] = transcripts.current_task_hint(tp)
-            w["pending_wakeup"] = transcripts.extract_pending_wakeup(tp)
+            w["background_tasks"] = transcripts.extract_background_tasks(tp)
+            # Sleeping on a ScheduleWakeup wins (it has a concrete wake time);
+            # otherwise an active GPU background waiter also counts as waiting.
+            w["pending_wakeup"] = (
+                transcripts.extract_pending_wakeup(tp)
+                or transcripts.gpu_wait_from_background(w["background_tasks"])
+            )
         else:
             w["current_task"] = None
+            w["background_tasks"] = []
             w["pending_wakeup"] = None
         tri = patrol.classify(w)
         w["triage"] = tri["triage"]
@@ -60,11 +67,9 @@ def _enriched_snapshot() -> dict:
         if tp:
             w["skills_used"] = transcripts.extract_skills_used(tp)
             w["memory_ops"] = transcripts.extract_memory_ops(tp)
-            w["background_tasks"] = transcripts.extract_background_tasks(tp)
         else:
             w["skills_used"] = []
             w["memory_ops"] = []
-            w["background_tasks"] = []
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (
         patrol.TRIAGE_PRIORITY.get(w.get("triage", ""), 99),

@@ -680,6 +680,14 @@ function fleet() {
     wakeupHeadline(pw) {
       if (!pw) return '';
       const label = pw.kind === 'gpu' ? '⏳ 等 GPU' : '⏳ 定时唤醒';
+      if (!pw.wake_at_ms) {
+        // Background waiter: no scheduled wake time, show the poll cadence.
+        const itv = pw.poll_interval_s;
+        const cadence = itv
+          ? (itv >= 60 ? `后台 waiter 每 ~${Math.round(itv / 60)}m check` : `后台 waiter 每 ${itv}s check`)
+          : '后台 waiter 监控中';
+        return `${label} · ${cadence}`;
+      }
       const hhmm = new Date(pw.wake_at_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const mins = Math.round((pw.wake_at_ms - this.nowTick) / 60000);
       if (pw.overdue) return `${label} · 原定 ${hhmm}，已过期 ${Math.max(1, -mins)}m`;

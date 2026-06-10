@@ -415,11 +415,13 @@ def _wakeup_info(block: dict, ts: str) -> Optional[dict]:
     is_gpu = bool(_GPU_WAIT_RE.search(reason + " " + prompt))
     return {
         "kind": "gpu" if is_gpu else "generic",
+        "source": "wakeup",
         "reason": reason[:300],
         "prompt": prompt[:300],
         "delay_seconds": delay,
         "scheduled_at_ms": scheduled_ms,
         "wake_at_ms": wake_ms,
+        "poll_interval_s": None,
         "overdue": now_ms > wake_ms + _WAKEUP_OVERDUE_GRACE_MS,
     }
 
@@ -477,38 +479,162 @@ def extract_pending_wakeup(path: str | Path) -> Optional[dict]:
     return None
 
 
+# Spawn acknowledgement of a background task. Modern Claude Code returns this
+# as the IMMEDIATE tool_result of a run_in_background Bash / persistent
+# Monitor; the real completion arrives later as a <task-notification>.
+_BG_SPAWN_ACK_RE = re.compile(
+    r"\b(?:running in background|will be notified|monitor(?:ing)? (?:started|running))\b",
+    re.IGNORECASE,
+)
+# Task id inside a spawn ack. Two formats exist:
+#   Bash bg:  "Command running in background with ID: b2g1awgbp."
+#   Monitor:  "Monitor started (task bo5pebcx6, persistent — ...)"
+_BG_TASK_ID_RE = re.compile(r"(?:\bID:\s*|\(task\s+)([a-zA-Z0-9_-]{4,})")
+_TASK_NOTIF_TASK_ID_RE = re.compile(r"<task-id>([a-zA-Z0-9_-]+)</task-id>")
+_TASK_NOTIF_TOOL_USE_RE = re.compile(r"<tool-use-id>([a-zA-Z0-9_-]+)</tool-use-id>")
+_TASK_NOTIF_STATUS_RE = re.compile(r"<status>\s*(completed|failed|error|stopped)\s*</status>", re.IGNORECASE)
+_SLEEP_RE = re.compile(r"\bsleep\s+(\d+)")
+
+
+def _result_text(c: dict) -> str:
+    cv = c.get("content")
+    if isinstance(cv, str):
+        return cv
+    if isinstance(cv, list):
+        return " ".join(x.get("text", "") for x in cv if isinstance(x, dict))
+    return str(cv or "")
+
+
 def extract_background_tasks(path: str | Path) -> list[dict]:
-    """Extract ACTIVE (unresolved) background Bash/Monitor tasks."""
+    """Extract ACTIVE (unresolved) background Bash/Monitor tasks.
+
+    Lifecycle: the tool_use gets an immediate spawn-ack tool_result
+    ("Command running in background with ID: <task_id> ... You will be
+    notified when it completes"); completion arrives later as a
+    <task-notification> user message referencing the tool_use id / task id.
+    A task is active until such a notification, an explicit TaskStop, or a
+    non-ack tool_result (legacy blocking completion / spawn error).
+    """
     p = Path(path)
     if not p.exists():
         return []
-    bg_by_id: dict[str, dict] = {}
-    resolved_ids: set[str] = set()
+    # Single pass collecting raw facts, resolution afterwards — transcript
+    # rows are not strictly ordered (a tool_result can precede its tool_use).
+    bg_uses: dict[str, dict] = {}       # tool_use_id -> task record
+    stopped_tasks: set[str] = set()     # harness task ids killed via TaskStop
+    ack_by_use: dict[str, str] = {}     # tool_use_id -> harness task id
+    plain_result_ids: set[str] = set()  # tool_use_ids with a non-ack result
+    notif_texts: list[str] = []
+
     for d in _iter_lines(p):
-        if d.get("type") == "assistant":
+        t = d.get("type")
+        if t == "assistant":
             for c in ((d.get("message") or {}).get("content") or []):
                 if not isinstance(c, dict) or c.get("type") != "tool_use":
                     continue
                 name = c.get("name", "")
                 inp = c.get("input") or {}
                 tid = c.get("id", "")
-                if name == "Bash" and inp.get("run_in_background") and tid:
-                    bg_by_id[tid] = {
-                        "type": "bash_bg",
-                        "description": (inp.get("description") or "")[:200],
-                        "command": (inp.get("command") or "")[:200],
+                if (name == "Bash" and inp.get("run_in_background") and tid) or \
+                   (name == "Monitor" and inp.get("persistent") and tid):
+                    cmd = str(inp.get("command") or "")
+                    desc = str(inp.get("description") or "")
+                    sleep_m = _SLEEP_RE.search(cmd)
+                    bg_uses[tid] = {
+                        "type": "bash_bg" if name == "Bash" else "monitor",
+                        "description": desc[:200],
+                        "command": cmd[:200],
+                        "started_ts": d.get("timestamp") or "",
+                        "task_id": None,
+                        "poll_interval_s": int(sleep_m.group(1)) if sleep_m else None,
+                        "is_gpu": bool(_GPU_WAIT_RE.search(cmd + " " + desc)),
                     }
-                elif name == "Monitor" and inp.get("persistent") and tid:
-                    bg_by_id[tid] = {
-                        "type": "monitor",
-                        "description": (inp.get("description") or "")[:200],
-                        "command": (inp.get("command") or "")[:200],
-                    }
-        elif d.get("type") == "user":
-            for c in ((d.get("message") or {}).get("content") or []):
-                if isinstance(c, dict) and c.get("type") == "tool_result":
-                    resolved_ids.add(c.get("tool_use_id", ""))
-    return [t for tid, t in bg_by_id.items() if tid not in resolved_ids]
+                elif name == "TaskStop":
+                    stop_id = str(inp.get("taskId") or inp.get("task_id") or "")
+                    if stop_id:
+                        stopped_tasks.add(stop_id)
+        elif t == "user":
+            content = (d.get("message") or {}).get("content") or []
+            text_parts: list[str] = [content] if isinstance(content, str) else []
+            for c in (content if isinstance(content, list) else []):
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    text_parts.append(c.get("text") or "")
+                elif c.get("type") == "tool_result":
+                    tu = c.get("tool_use_id", "")
+                    if not tu:
+                        continue
+                    txt = _result_text(c)
+                    id_m = _BG_TASK_ID_RE.search(txt)
+                    if not c.get("is_error") and id_m and _BG_SPAWN_ACK_RE.search(txt):
+                        ack_by_use.setdefault(tu, id_m.group(1))
+                    else:
+                        plain_result_ids.add(tu)
+            full_text = " ".join(text_parts)
+            if "<task-notification>" in full_text:
+                notif_texts.append(full_text)
+        elif t == "queue-operation":
+            # Notifications queued while the session is busy land here first.
+            blob = d.get("content")
+            if isinstance(blob, str) and "<task-notification>" in blob:
+                notif_texts.append(blob)
+        elif t == "attachment":
+            blob = (d.get("attachment") or {}).get("prompt")
+            if isinstance(blob, str) and "<task-notification>" in blob:
+                notif_texts.append(blob)
+
+    # ---- resolution ----
+    task_to_use = {tk: tu for tu, tk in ack_by_use.items() if tu in bg_uses}
+    resolved: set[str] = set()
+    for ft in notif_texts:
+        # Persistent Monitor "event" pulses recur without ending the task.
+        # Distinguish them STRUCTURALLY (pulses carry no <tool-use-id> and no
+        # terminal <status>), never by summary text — the assistant-authored
+        # task description is embedded verbatim and could say anything.
+        is_event = not _TASK_NOTIF_TOOL_USE_RE.search(ft) and not _TASK_NOTIF_STATUS_RE.search(ft)
+        candidates = list(_TASK_NOTIF_TOOL_USE_RE.findall(ft))
+        candidates += [task_to_use[tk] for tk in _TASK_NOTIF_TASK_ID_RE.findall(ft) if tk in task_to_use]
+        for tu in candidates:
+            if tu in bg_uses and not (is_event and bg_uses[tu]["type"] == "monitor"):
+                resolved.add(tu)
+
+    out: list[dict] = []
+    for tu, task in bg_uses.items():
+        task["task_id"] = ack_by_use.get(tu)
+        if tu in resolved:
+            continue
+        if task["task_id"] and task["task_id"] in stopped_tasks:
+            continue
+        # No ack and a plain result: spawn error or legacy blocking completion.
+        if tu not in ack_by_use and tu in plain_result_ids:
+            continue
+        out.append(task)
+    return out
+
+
+def gpu_wait_from_background(tasks: list[dict]) -> Optional[dict]:
+    """Synthesize a pending_wakeup-style record from an active GPU waiter.
+
+    Background waiters have no scheduled wake time — wake_at_ms is None and
+    poll_interval_s (parsed from `sleep N` in the command) hints the cadence.
+    Picks the most recently started GPU waiter (several can coexist).
+    """
+    for t in reversed(tasks or []):
+        if not t.get("is_gpu"):
+            continue
+        return {
+            "kind": "gpu",
+            "source": "background",
+            "reason": (t.get("description") or t.get("command") or "")[:300],
+            "prompt": "",
+            "delay_seconds": None,
+            "scheduled_at_ms": None,
+            "wake_at_ms": None,
+            "poll_interval_s": t.get("poll_interval_s"),
+            "overdue": False,
+        }
+    return None
 
 
 def extract_plan_history(path: str | Path) -> list[dict]:

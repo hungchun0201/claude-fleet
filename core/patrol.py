@@ -111,22 +111,37 @@ def classify(window_dict: dict) -> dict:
             "suggestion": "去终端批准",
         }
 
-    # Session is sleeping on a ScheduleWakeup (e.g. polling a PACE GPU job).
+    # Session is waiting on GPU work: either sleeping on a ScheduleWakeup
+    # (has a concrete wake time) or running a background waiter (poll loop).
     # Without this it would read as generic "working" / "stalled 停在 ScheduleWakeup".
     pw = window_dict.get("pending_wakeup")
     if pw:
-        wake_hhmm = time.strftime("%H:%M", time.localtime(pw["wake_at_ms"] / 1000))
         label = "等 GPU" if pw.get("kind") == "gpu" else "等待定时唤醒"
         why = (pw.get("reason") or "").split("\n")[0][:80]
-        if pw.get("overdue"):
+        wake_ms = pw.get("wake_at_ms")
+        if wake_ms:
+            wake_hhmm = time.strftime("%H:%M", time.localtime(wake_ms / 1000))
+            if pw.get("overdue"):
+                return {
+                    "triage": "stalled",
+                    "reason": f"{label}，唤醒已过期（原定 {wake_hhmm}）。{why}",
+                    "suggestion": "检查会话是否卡住",
+                }
             return {
-                "triage": "stalled",
-                "reason": f"{label}，唤醒已过期（原定 {wake_hhmm}）。{why}",
-                "suggestion": "检查会话是否卡住",
+                "triage": "working",
+                "reason": f"{label} · 下次唤醒 {wake_hhmm}。{why}",
+                "suggestion": "",
             }
+        itv = pw.get("poll_interval_s")
+        if itv and itv >= 60:
+            cadence = f"后台 waiter 每 ~{itv // 60}m 检查"
+        elif itv:
+            cadence = f"后台 waiter 每 {itv}s 检查"
+        else:
+            cadence = "后台 waiter 监控中"
         return {
             "triage": "working",
-            "reason": f"{label} · 下次唤醒 {wake_hhmm}。{why}",
+            "reason": f"{label}（{cadence}）。{why}",
             "suggestion": "",
         }
 
