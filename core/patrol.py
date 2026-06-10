@@ -19,9 +19,6 @@ TRIAGE_PRIORITY = {
 }
 
 
-_BG_KEYWORDS = re.compile(r"等待|等.*通知|后台|background|polling|monitor|run_in_background", re.IGNORECASE)
-
-
 def _last_assistant_info(transcript_path: str) -> Optional[dict]:
     """Extract stop_reason, last content block type, and background task status."""
     p = Path(transcript_path)
@@ -81,10 +78,11 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
                     break
         break
 
-    # Keyword fallback: if the assistant's last text mentions waiting for background work
-    if not has_pending_background and last_text and _BG_KEYWORDS.search(last_text):
-        has_pending_background = True
-
+    # NOTE: no keyword fallback on last_text here. Merely MENTIONING
+    # "background"/"后台" in prose (e.g. a summary quoting a spawn ack) used
+    # to flip an idle session to working. Real background work is detected
+    # structurally: active tasks via extract_background_tasks (classify reads
+    # window_dict["background_tasks"]) and queued notifications above.
     return {
         "stop_reason": stop_reason,
         "last_block_type": last_block_type,
@@ -219,6 +217,20 @@ def classify(window_dict: dict) -> dict:
 
     stop = info["stop_reason"]
     idle_str = _format_idle(idle)
+
+    # Active background tasks (bg Bash / Monitor / Workflow), detected
+    # structurally from the transcript. Non-GPU tasks (e.g. a du scan over
+    # ssh) land here; GPU waiters were already handled as pending_wakeup.
+    bg = window_dict.get("background_tasks") or []
+    if bg:
+        latest = bg[-1]
+        what = (latest.get("description") or latest.get("command") or "")[:60]
+        count = f"{len(bg)} 个" if len(bg) > 1 else ""
+        return {
+            "triage": "working",
+            "reason": f"后台任务{count}执行中：{what}",
+            "suggestion": "",
+        }
 
     if info.get("has_pending_background"):
         summary = info["last_text"].split("\n")[0][:80] if info["last_text"] else ""

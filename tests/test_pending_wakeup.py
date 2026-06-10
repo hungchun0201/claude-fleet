@@ -127,6 +127,20 @@ def test_gpu_identifier_in_reason_does_not_classify(tmp_path):
 
 
 @pytest.mark.unit
+def test_bare_pace_hostname_in_reason_does_not_classify(tmp_path):
+    # Regression: non-GPU chores on the pace host (quota checks, du scans)
+    # must not be tagged 等GPU just because the hostname appears.
+    sched = NOW_MS - 60_000
+    p = _write(tmp_path, [
+        _wakeup_row(sched, delay=900, reason="recheck pace disk quota after cleanup"),
+        _tool_result_row(sched + 1_000),
+    ])
+    pw = extract_pending_wakeup(p)
+    assert pw is not None
+    assert pw["kind"] == "generic"
+
+
+@pytest.mark.unit
 def test_fired_wakeup_is_not_pending(tmp_path):
     # The harness injected the /loop prompt after the wakeup fired.
     sched = NOW_MS - 3_600_000

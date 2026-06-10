@@ -250,6 +250,64 @@ def test_gpu_wait_none_without_gpu_tasks():
 
 
 @pytest.mark.unit
+def test_plain_remote_command_on_pace_not_tagged_gpu(tmp_path):
+    # Regression: a du scan over `ssh pace` is a remote chore, not a GPU wait.
+    # The bare hostname must not classify; only Slurm/GPU tokens do.
+    p = _write(tmp_path, [
+        _bg_bash_use("toolu_a",
+                     cmd="ssh pace 'S=/storage/scratch1/1/hlin464; du -sh $S/* 2>/dev/null | sort -rh | head -25'",
+                     desc="Disk usage breakdown of scratch directory"),
+        _ack("toolu_a", "btask1"),
+    ])
+    tasks = extract_background_tasks(p)
+    assert len(tasks) == 1
+    assert tasks[0]["is_gpu"] is False
+    assert gpu_wait_from_background(tasks) is None
+
+
+def _end_turn_transcript(tmp_path: Path, text: str) -> str:
+    p = tmp_path / "et.jsonl"
+    p.write_text(json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": text}]},
+    }) + "\n")
+    return str(p)
+
+
+@pytest.mark.unit
+def test_classify_active_bg_tasks_beat_completed(tmp_path):
+    # Turn ended + idle, but du shells still run in background → working.
+    tp = _end_turn_transcript(tmp_path, "兩個 du 還在跑，完成通知一到我就彙整。")
+    w = {
+        "status": "idle", "idle_seconds": 600, "name": "s", "transcript_path": tp,
+        "background_tasks": [
+            {"type": "bash_bg", "description": "Disk usage breakdown of scratch", "command": "ssh pace du", "is_gpu": False},
+            {"type": "bash_bg", "description": "Disk usage breakdown of project", "command": "ssh pace du", "is_gpu": False},
+        ],
+    }
+    tri = classify(w)
+    assert tri["triage"] == "working"
+    assert "后台任务" in tri["reason"]
+    assert "Disk usage breakdown of project" in tri["reason"]
+
+
+@pytest.mark.unit
+def test_classify_prose_mentioning_background_is_not_working(tmp_path):
+    # Regression: an idle session whose last summary merely QUOTES the word
+    # "background" (e.g. "Workflow launched in background. Task ID: ...")
+    # used to flip to working via a keyword match. With no actual background
+    # tasks it must read completed.
+    tp = _end_turn_transcript(
+        tmp_path,
+        "完成了。spawn ack（Workflow launched in background. Task ID: …）解析出 task id，等待通知即可。",
+    )
+    w = {"status": "idle", "idle_seconds": 600, "name": "s",
+         "transcript_path": tp, "background_tasks": []}
+    assert classify(w)["triage"] == "completed"
+
+
+@pytest.mark.unit
 def test_classify_background_gpu_waiter_is_working():
     w = {
         "status": "shell", "idle_seconds": 1200, "name": "s", "transcript_path": None,

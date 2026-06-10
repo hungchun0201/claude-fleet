@@ -367,13 +367,16 @@ def extract_memory_ops(path: str | Path) -> list[dict]:
     return ops
 
 
-# Heuristic: does this text describe waiting on GPU jobs (PACE / Slurm /
+# Heuristic: does this text describe waiting on GPU jobs (Slurm tooling /
 # specific GPU SKUs)? Used to tag the card "等 GPU". Custom boundaries treat
 # '-' and '/' as word characters so identifiers like a branch named
 # feat/gpu-wait-tag or a file called h100-jitter.json never match — only
-# free-standing words ("ssh pace", "L40S jobs", "等 GPU") do.
+# free-standing words ("squeue", "L40S jobs", "等 GPU") do.
+# Deliberately NOT in the list: the bare hostname "pace" — every remote chore
+# (du scans, quota checks, rsync) runs over `ssh pace`, and tagging those
+# 等GPU is wrong. A real GPU wait always carries a Slurm/GPU token.
 _GPU_WAIT_RE = re.compile(
-    r"(?<![\w/-])(?:pace|gpu|slurm|squeue|sbatch|salloc|scancel|sacct|h100|h200|l40s?|a100|v100|cuda|vllm)(?![\w/-])"
+    r"(?<![\w/-])(?:gpu|slurm|squeue|sbatch|salloc|scancel|sacct|h100|h200|l40s?|a100|v100|cuda|vllm)(?![\w/-])"
     r"|(?<![\w/-])rtx\s*\d{3,4}(?![\w/-])"
     r"|\bjob\s*#?\d{5,}"
     r"|等\s*gpu",
