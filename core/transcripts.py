@@ -366,12 +366,15 @@ def extract_memory_ops(path: str | Path) -> list[dict]:
     return ops
 
 
-# Heuristic: does a ScheduleWakeup reason/prompt describe waiting on GPU jobs
-# (PACE / Slurm / specific GPU SKUs)? Used to tag the card "等 GPU".
+# Heuristic: does this text describe waiting on GPU jobs (PACE / Slurm /
+# specific GPU SKUs)? Used to tag the card "等 GPU". Custom boundaries treat
+# '-' and '/' as word characters so identifiers like a branch named
+# feat/gpu-wait-tag or a file called h100-jitter.json never match — only
+# free-standing words ("ssh pace", "L40S jobs", "等 GPU") do.
 _GPU_WAIT_RE = re.compile(
-    r"\b(pace|gpu|slurm|squeue|sbatch|salloc|scancel|h100|h200|l40s?|a100|v100|cuda|vllm)\b"
-    r"|rtx\s*\d{3,4}"
-    r"|job\s*#?\d{5,}"
+    r"(?<![\w/-])(?:pace|gpu|slurm|squeue|sbatch|salloc|scancel|sacct|h100|h200|l40s?|a100|v100|cuda|vllm)(?![\w/-])"
+    r"|(?<![\w/-])rtx\s*\d{3,4}(?![\w/-])"
+    r"|\bjob\s*#?\d{5,}"
     r"|等\s*gpu",
     re.IGNORECASE,
 )
@@ -412,7 +415,10 @@ def _wakeup_info(block: dict, ts: str) -> Optional[dict]:
     prompt = str(inp.get("prompt") or "")
     wake_ms = scheduled_ms + delay * 1000
     now_ms = int(time.time() * 1000)
-    is_gpu = bool(_GPU_WAIT_RE.search(reason + " " + prompt))
+    # Classify from the REASON only — the prompt is a /loop continuation
+    # payload that can mention branch/file names ("feat/gpu-wait-tag") that
+    # have nothing to do with what the session is waiting for.
+    is_gpu = bool(_GPU_WAIT_RE.search(reason))
     return {
         "kind": "gpu" if is_gpu else "generic",
         "source": "wakeup",
@@ -479,6 +485,61 @@ def extract_pending_wakeup(path: str | Path) -> Optional[dict]:
     return None
 
 
+def codex_call_marker(path: str | Path) -> Optional[int]:
+    """Detect an in-flight Codex MCP call at the transcript tail.
+
+    Returns the marker timestamp (ms) or None. Two shapes:
+    - an mcp__codex__* tool_use with no tool_result yet, or
+    - the most recent assistant action is ToolSearch loading the codex tool
+      (the actual MCP call is in flight and not yet written to the
+      transcript — observed in real sessions).
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    seen_results: set[str] = set()
+    for d in reversed(_tail_lines(p, 60)):
+        t = d.get("type")
+        if t == "user":
+            content = (d.get("message") or {}).get("content") or []
+            if isinstance(content, str):
+                if content.strip():
+                    return None
+                continue
+            if not isinstance(content, list):
+                continue
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and (c.get("text") or "").strip():
+                    return None
+                if c.get("type") == "tool_result":
+                    seen_results.add(c.get("tool_use_id", ""))
+        elif t == "assistant":
+            content = (d.get("message") or {}).get("content") or []
+            if not isinstance(content, list):
+                return None
+            has_action = False
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                ct = c.get("type")
+                if ct == "tool_use":
+                    has_action = True
+                    name = c.get("name", "")
+                    if name.startswith("mcp__codex__") and c.get("id", "") not in seen_results:
+                        return _parse_ts_ms(d.get("timestamp") or "")
+                    if name == "ToolSearch" and "codex" in str((c.get("input") or {}).get("query", "")).lower():
+                        return _parse_ts_ms(d.get("timestamp") or "")
+                elif ct == "text" and (c.get("text") or "").strip():
+                    has_action = True
+            if has_action:
+                # Most recent assistant action is something else.
+                return None
+            # thinking-only row — keep walking
+    return None
+
+
 # Spawn acknowledgement of a background task. Modern Claude Code returns this
 # as the IMMEDIATE tool_result of a run_in_background Bash / persistent
 # Monitor; the real completion arrives later as a <task-notification>.
@@ -494,6 +555,9 @@ _TASK_NOTIF_TASK_ID_RE = re.compile(r"<task-id>([a-zA-Z0-9_-]+)</task-id>")
 _TASK_NOTIF_TOOL_USE_RE = re.compile(r"<tool-use-id>([a-zA-Z0-9_-]+)</tool-use-id>")
 _TASK_NOTIF_STATUS_RE = re.compile(r"<status>\s*(completed|failed|error|stopped)\s*</status>", re.IGNORECASE)
 _SLEEP_RE = re.compile(r"\bsleep\s+(\d+)")
+# A background task that runs a Codex review is not a GPU waiter, even if its
+# prompt text mentions GPUs (e.g. reviewing a GPU-memory article).
+_CODEX_TASK_RE = re.compile(r"\bcodex\s+(?:exec|mcp)\b|codex\s+review", re.IGNORECASE)
 
 
 def _result_text(c: dict) -> str:
@@ -540,6 +604,7 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                     cmd = str(inp.get("command") or "")
                     desc = str(inp.get("description") or "")
                     sleep_m = _SLEEP_RE.search(cmd)
+                    haystack = cmd + " " + desc
                     bg_uses[tid] = {
                         "type": "bash_bg" if name == "Bash" else "monitor",
                         "description": desc[:200],
@@ -547,7 +612,7 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                         "started_ts": d.get("timestamp") or "",
                         "task_id": None,
                         "poll_interval_s": int(sleep_m.group(1)) if sleep_m else None,
-                        "is_gpu": bool(_GPU_WAIT_RE.search(cmd + " " + desc)),
+                        "is_gpu": bool(_GPU_WAIT_RE.search(haystack)) and not _CODEX_TASK_RE.search(haystack),
                     }
                 elif name == "TaskStop":
                     stop_id = str(inp.get("taskId") or inp.get("task_id") or "")

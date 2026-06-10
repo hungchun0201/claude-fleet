@@ -29,9 +29,20 @@ class State:
 state = State()
 
 
+def _ui_version() -> str:
+    """Frontend build stamp; the client hard-reloads when it changes."""
+    try:
+        return str(int((STATIC_DIR / "index.html").stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 def _enriched_snapshot() -> dict:
     snap = sessions.snapshot()
+    snap["ui_version"] = _ui_version()
     perm_by_tty = perms.pending_by_tty()
+    exec_reviews = codex.find_exec_reviews([w["pid"] for w in snap["windows"]])
+    rollouts = codex.recent_rollouts()
     for w in snap["windows"]:
         tty = w.get("tty")
         if tty and tty in perm_by_tty:
@@ -60,6 +71,12 @@ def _enriched_snapshot() -> dict:
             w["current_task"] = None
             w["background_tasks"] = []
             w["pending_wakeup"] = None
+        # In-flight MCP codex calls leave no transcript row; only look for
+        # the marker on busy windows without an exec-style codex child.
+        marker = None
+        if tp and w["status"] == "busy" and w["pid"] not in exec_reviews:
+            marker = transcripts.codex_call_marker(tp)
+        w["codex_review"] = codex.detect_codex_review(w, exec_reviews, rollouts, marker)
         tri = patrol.classify(w)
         w["triage"] = tri["triage"]
         w["triage_reason"] = tri["reason"]

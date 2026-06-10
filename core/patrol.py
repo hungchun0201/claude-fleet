@@ -111,6 +111,26 @@ def classify(window_dict: dict) -> dict:
             "suggestion": "去终端批准",
         }
 
+    # Session is running a Codex review (exec child process or in-flight MCP
+    # call). Stalled = exec rollout silent too long (likely hung).
+    cr = window_dict.get("codex_review")
+    if cr:
+        elapsed = _format_idle(cr.get("elapsed_s") or 0)
+        if cr.get("stalled"):
+            silent = _format_idle(cr.get("silent_s") or 0)
+            return {
+                "triage": "stalled",
+                "reason": f"Codex 审查疑似卡死：已 {elapsed}，输出停滞 {silent}",
+                "suggestion": "查看 Codex 进度，考虑重启该审查",
+            }
+        act = (cr.get("current_action") or "")[:70]
+        tail = f"。{act}" if act else ("（MCP 调用，无实时输出）" if cr.get("source") == "mcp" else "")
+        return {
+            "triage": "working",
+            "reason": f"Codex 审查中 · 已 {elapsed}{tail}",
+            "suggestion": "",
+        }
+
     # Session is waiting on GPU work: either sleeping on a ScheduleWakeup
     # (has a concrete wake time) or running a background waiter (poll loop).
     # Without this it would read as generic "working" / "stalled 停在 ScheduleWakeup".

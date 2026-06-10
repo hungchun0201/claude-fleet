@@ -216,6 +216,21 @@ def test_gpu_wait_picks_most_recent_gpu_task():
 
 
 @pytest.mark.unit
+def test_codex_review_bg_task_not_tagged_gpu(tmp_path):
+    # A codex exec reviewing GPU-related content is not a GPU waiter.
+    p = _write(tmp_path, [
+        _bg_bash_use("toolu_a",
+                     cmd="codex exec \"review the H100 GPU memory article\" | tee out.md",
+                     desc="Run Codex review round 1 via CLI in background"),
+        _ack("toolu_a", "btask1"),
+    ])
+    tasks = extract_background_tasks(p)
+    assert len(tasks) == 1
+    assert tasks[0]["is_gpu"] is False
+    assert gpu_wait_from_background(tasks) is None
+
+
+@pytest.mark.unit
 def test_gpu_wait_none_without_gpu_tasks():
     assert gpu_wait_from_background([]) is None
     assert gpu_wait_from_background([{"is_gpu": False, "description": "d", "command": "c"}]) is None

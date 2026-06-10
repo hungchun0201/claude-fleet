@@ -260,6 +260,10 @@
                   x-show="w.pending_wakeup"
                   :class="w.pending_wakeup?.overdue ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'"
                   x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ 等GPU' : '⏳ 定时唤醒'"></span>
+            <span class="text-[10px] px-1.5 rounded-full shrink-0"
+                  x-show="w.codex_review"
+                  :class="w.codex_review?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'"
+                  x-text="w.codex_review?.stalled ? '🔍 Codex 卡住?' : '🔍 Codex'"></span>
           </div>
           <div class="text-xs text-gray-500 truncate" x-text="w.cwd"></div>
         </div>
@@ -272,6 +276,18 @@
                :title="w.pending_wakeup?.reason">
             <div class="font-medium" x-text="wakeupHeadline(w.pending_wakeup)"></div>
             <div class="truncate opacity-80" x-show="w.pending_wakeup?.reason" x-text="w.pending_wakeup?.reason"></div>
+          </div>
+          <!-- Live Codex review (exec child process or in-flight MCP call) -->
+          <div x-show="w.codex_review" class="rounded px-1.5 py-1 border text-[11px]"
+               :class="w.codex_review?.stalled ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-violet-50 border-violet-100 text-violet-700'">
+            <div class="flex items-center gap-1">
+              <span class="font-medium flex-1" x-text="codexHeadline(w.codex_review)"></span>
+              <button x-show="w.codex_review?.codex_session_id" @click.stop="openHistoryTimeline(w.codex_review.codex_session_id)"
+                      class="border rounded px-1 text-[10px] hover:bg-violet-100 shrink-0"
+                      :class="w.codex_review?.stalled ? 'border-amber-300 text-amber-700' : 'border-violet-300 text-violet-700'">
+                Codex 进度</button>
+            </div>
+            <div class="truncate opacity-80" x-show="w.codex_review?.current_action" x-text="w.codex_review?.current_action"></div>
           </div>
           <!-- Review verdict -->
           <div x-show="reviewVerdicts[w.pid]"
@@ -621,6 +637,7 @@ function fleet() {
     expandedMemory: null,
     memorySessions: {},
     nowTick: Date.now(),
+    uiVersion: null,
 
     get waitingWindows() {
       return this.windows.filter(w => w.triage === 'waiting_perm');
@@ -667,6 +684,12 @@ function fleet() {
     },
 
     applySnapshot(snap) {
+      // Self-heal a stale frontend: if the server's index.html changed since
+      // this page loaded, hard-reload so new payload fields render correctly.
+      if (snap.ui_version) {
+        if (this.uiVersion && snap.ui_version !== this.uiVersion) { location.reload(); return; }
+        this.uiVersion = snap.ui_version;
+      }
       this.windows = snap.windows || [];
       this.counts = snap.counts || this.counts;
     },
@@ -693,6 +716,16 @@ function fleet() {
       if (pw.overdue) return `${label} · 原定 ${hhmm}，已过期 ${Math.max(1, -mins)}m`;
       if (mins <= 0) return `${label} · 下次check ${hhmm}（即将唤醒）`;
       return `${label} · 下次check ${hhmm}（约 ${mins}m 后）`;
+    },
+
+    codexHeadline(cr) {
+      if (!cr) return '';
+      const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
+      const elapsed = fmt(cr.elapsed_s || 0);
+      if (cr.stalled) return `🔍 Codex 审查疑似卡死 · 已 ${elapsed} · 输出停滞 ${fmt(cr.silent_s || 0)}`;
+      if (cr.source === 'mcp') return `🔍 Codex 审查中（MCP）· 已 ${elapsed} · 无实时输出`;
+      const silent = cr.silent_s != null ? ` · 最后输出 ${fmt(cr.silent_s)} 前` : '';
+      return `🔍 Codex 审查中 · 已 ${elapsed}${silent}`;
     },
 
     async focusWindow(pid) {

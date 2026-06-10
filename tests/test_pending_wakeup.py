@@ -98,6 +98,35 @@ def test_generic_wakeup_not_tagged_gpu(tmp_path):
 
 
 @pytest.mark.unit
+def test_gpu_words_in_prompt_do_not_classify(tmp_path):
+    # Regression: a fallback wakeup whose /loop PROMPT mentions the branch
+    # feat/gpu-wait-tag was mislabeled 等GPU. Only the reason counts.
+    sched = NOW_MS - 60_000
+    p = _write(tmp_path, [
+        _wakeup_row(sched, delay=1500,
+                    reason="Fallback in case the review workflow notification is missed",
+                    prompt="apply findings, commit on feat/gpu-wait-tag, report"),
+        _tool_result_row(sched + 1_000),
+    ])
+    pw = extract_pending_wakeup(p)
+    assert pw is not None
+    assert pw["kind"] == "generic"
+
+
+@pytest.mark.unit
+def test_gpu_identifier_in_reason_does_not_classify(tmp_path):
+    # 'gpu' inside a hyphen/slash identifier is not a GPU wait.
+    sched = NOW_MS - 60_000
+    p = _write(tmp_path, [
+        _wakeup_row(sched, delay=600, reason="waiting to commit feat/gpu-wait-tag branch"),
+        _tool_result_row(sched + 1_000),
+    ])
+    pw = extract_pending_wakeup(p)
+    assert pw is not None
+    assert pw["kind"] == "generic"
+
+
+@pytest.mark.unit
 def test_fired_wakeup_is_not_pending(tmp_path):
     # The harness injected the /loop prompt after the wakeup fired.
     sched = NOW_MS - 3_600_000

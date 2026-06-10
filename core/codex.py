@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import time
 from dataclasses import dataclass, asdict, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -232,6 +235,237 @@ def list_codex_sessions() -> list[CodexSession]:
         ))
     sessions.sort(key=lambda s: s.transcript_mtime, reverse=True)
     return sessions
+
+
+# ---------- live Codex review detection ----------
+#
+# Two shapes exist in the wild:
+#   exec: a Claude session shells out `codex exec "<prompt>"` (often piped to
+#         tee). Detectable from the process tree; its rollout file STREAMS,
+#         so we can show current activity and flag a stalled review.
+#   mcp:  a Claude session calls the mcp__codex__codex tool. The in-flight
+#         tool_use is not in the Claude transcript yet; the rollout is
+#         written only at start (session_meta + task_started), so there is
+#         no live progress — only the start time.
+
+_EXEC_CMD_RE = re.compile(r"(?:^|[/\s])codex\s+exec\s")
+EXEC_STALL_THRESHOLD_S = 15 * 60
+
+
+def _parse_etime(s: str) -> int:
+    """ps etime: [[dd-]hh:]mm:ss -> seconds."""
+    s = s.strip()
+    days = 0
+    if "-" in s:
+        d, s = s.split("-", 1)
+        try:
+            days = int(d)
+        except ValueError:
+            return 0
+    parts = s.split(":")
+    try:
+        nums = [int(x) for x in parts]
+    except ValueError:
+        return 0
+    if len(nums) == 3:
+        h, m, sec = nums
+    elif len(nums) == 2:
+        h, (m, sec) = 0, nums
+    else:
+        return 0
+    return days * 86400 + h * 3600 + m * 60 + sec
+
+
+def _ps_snapshot() -> list[dict]:
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid=,etime=,command="],
+            stderr=subprocess.DEVNULL, timeout=3,
+        ).decode(errors="replace")
+    except Exception:
+        return []
+    procs = []
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            procs.append({
+                "pid": int(parts[0]), "ppid": int(parts[1]),
+                "etime_s": _parse_etime(parts[2]), "command": parts[3],
+            })
+        except ValueError:
+            continue
+    return procs
+
+
+def find_exec_reviews(window_pids: list[int]) -> dict[int, dict]:
+    """Map window pid -> {elapsed_s, pid, command} for descendant `codex exec`."""
+    procs = _ps_snapshot()
+    if not procs:
+        return {}
+    children: dict[int, list[dict]] = {}
+    for pr in procs:
+        children.setdefault(pr["ppid"], []).append(pr)
+
+    out: dict[int, dict] = {}
+    for wpid in window_pids:
+        queue = list(children.get(wpid, []))
+        seen: set[int] = set()
+        while queue:
+            pr = queue.pop(0)
+            if pr["pid"] in seen:
+                continue
+            seen.add(pr["pid"])
+            if _EXEC_CMD_RE.search(pr["command"]):
+                out[wpid] = {
+                    "elapsed_s": pr["etime_s"],
+                    "pid": pr["pid"],
+                    "command": pr["command"][:300],
+                }
+                break
+            queue.extend(children.get(pr["pid"], []))
+    return out
+
+
+_ROLLOUT_META_CACHE: dict[str, dict] = {}
+
+
+def recent_rollouts(max_age_s: int = 48 * 3600) -> list[dict]:
+    """Codex rollout files written or started within max_age_s, newest first.
+
+    Scans only today's and yesterday's date directories — this runs in the
+    2s poll loop.
+    """
+    if not CODEX_SESSIONS_DIR.exists():
+        return []
+    now = time.time()
+    dirs = []
+    for delta in (0, 1):
+        d = datetime.now() - timedelta(days=delta)
+        dirs.append(CODEX_SESSIONS_DIR / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}")
+    out: list[dict] = []
+    for dd in dirs:
+        if not dd.is_dir():
+            continue
+        for f in dd.glob("*.jsonl"):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            key = str(f)
+            meta = _ROLLOUT_META_CACHE.get(key)
+            if meta is None:
+                meta = _parse_session_meta(f) or {}
+                if meta:
+                    _ROLLOUT_META_CACHE[key] = meta
+            started_ms = None
+            ts = meta.get("timestamp", "")
+            if ts:
+                try:
+                    started_ms = int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+                except ValueError:
+                    pass
+            fresh = (now - st.st_mtime) <= max_age_s or (
+                started_ms is not None and (now * 1000 - started_ms) <= max_age_s * 1000
+            )
+            if not fresh:
+                continue
+            out.append({
+                "path": key,
+                "codex_session_id": meta.get("id", f.stem),
+                "cwd": meta.get("cwd", ""),
+                "originator": meta.get("originator", ""),
+                "started_at_ms": started_ms,
+                "last_write_ms": int(st.st_mtime * 1000),
+                "size": st.st_size,
+            })
+    out.sort(key=lambda r: -(r["started_at_ms"] or 0))
+    return out
+
+
+def rollout_current_action(path: str | Path) -> Optional[str]:
+    """Most recent meaningful event in a rollout, as a short human string."""
+    from .transcripts import _tail_lines
+    for d in reversed(_tail_lines(Path(path), 30)):
+        payload = d.get("payload") or {}
+        pt = payload.get("type", "")
+        if d.get("type") == "response_item":
+            if pt == "function_call":
+                args = payload.get("arguments") or ""
+                try:
+                    cmd = json.loads(args).get("cmd") or json.loads(args).get("command") or ""
+                except Exception:
+                    cmd = ""
+                return f"exec: {(cmd or args)[:100]}"
+            if pt == "message":
+                for c in (payload.get("content") or []):
+                    if isinstance(c, dict) and c.get("type") == "output_text":
+                        return f"output: {(c.get('text') or '')[:100]}"
+            if pt == "reasoning":
+                return "thinking…"
+        elif d.get("type") == "event_msg" and pt == "task_started":
+            return "task started"
+    return None
+
+
+def _cwd_related(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def detect_codex_review(window: dict, exec_map: dict[int, dict],
+                        rollouts: list[dict], marker_ts_ms: Optional[int]) -> Optional[dict]:
+    """Build the codex_review record for one window, or None."""
+    now_ms = int(time.time() * 1000)
+    pid = window.get("pid")
+    cwd = window.get("cwd", "")
+
+    ex = exec_map.get(pid)
+    if ex:
+        started_ms = now_ms - ex["elapsed_s"] * 1000
+        # The exec-originated rollout whose start is closest after the
+        # process start — NOT the newest: later review rounds in the same cwd
+        # must not be attributed to a still-running (possibly hung) earlier
+        # process. The backward slack only tolerates ps-etime rounding;
+        # anything larger admits the PREVIOUS round's finished rollout, which
+        # min() would then pick (wrong session id, false stalled flag).
+        candidates = [
+            r for r in rollouts
+            if r["originator"] == "codex_exec" and _cwd_related(r["cwd"], cwd)
+            and r["started_at_ms"] and r["started_at_ms"] >= started_ms - 30_000
+        ]
+        roll = min(candidates, key=lambda r: r["started_at_ms"], default=None)
+        silent_s = (now_ms - roll["last_write_ms"]) // 1000 if roll else None
+        return {
+            "source": "exec",
+            "elapsed_s": ex["elapsed_s"],
+            "codex_session_id": roll["codex_session_id"] if roll else None,
+            "streaming": roll is not None,
+            "silent_s": silent_s,
+            "stalled": silent_s is not None and silent_s > EXEC_STALL_THRESHOLD_S,
+            "current_action": rollout_current_action(roll["path"]) if roll else None,
+        }
+
+    if marker_ts_ms is not None:
+        roll = next(
+            (r for r in rollouts
+             if r["originator"] != "codex_exec" and r["cwd"] == cwd
+             and r["started_at_ms"] and r["started_at_ms"] >= marker_ts_ms - 120_000),
+            None,
+        )
+        started_ms = (roll["started_at_ms"] if roll else marker_ts_ms)
+        return {
+            "source": "mcp",
+            "elapsed_s": max(0, (now_ms - started_ms) // 1000),
+            "codex_session_id": roll["codex_session_id"] if roll else None,
+            "streaming": False,
+            "silent_s": None,
+            "stalled": False,
+            "current_action": None,
+        }
+    return None
 
 
 def codex_timeline(path: str | Path, limit: int = 60) -> list[dict]:
