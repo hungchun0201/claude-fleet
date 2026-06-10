@@ -264,6 +264,10 @@
                   x-show="w.codex_review"
                   :class="w.codex_review?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'"
                   x-text="w.codex_review?.stalled ? '🔍 Codex 卡住?' : '🔍 Codex'"></span>
+            <span class="text-[10px] px-1.5 rounded-full shrink-0"
+                  x-show="w.workflow_run"
+                  :class="w.workflow_run?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'"
+                  x-text="w.workflow_run?.stalled ? '⚙️ Workflow 卡住?' : '⚙️ Workflow'"></span>
           </div>
           <div class="text-xs text-gray-500 truncate" x-text="w.cwd"></div>
         </div>
@@ -295,6 +299,13 @@
             </div>
             <div class="truncate opacity-80" x-show="w.codex_review?.current_action" x-text="w.codex_review?.current_action"></div>
           </div>
+          <!-- Live Workflow run (background multi-agent fan-out) -->
+          <div x-show="w.workflow_run" class="rounded px-1.5 py-1 border text-[11px]"
+               :class="w.workflow_run?.stalled ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-teal-50 border-teal-100 text-teal-700'"
+               :title="w.workflow_run?.description">
+            <div class="font-medium" x-text="workflowHeadline(w.workflow_run)"></div>
+            <div class="truncate opacity-80" x-show="w.workflow_run?.description" x-text="w.workflow_run?.description"></div>
+          </div>
           <!-- Review verdict -->
           <div x-show="reviewVerdicts[w.pid]"
                class="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 max-h-32 overflow-y-auto whitespace-pre-wrap"
@@ -303,7 +314,7 @@
           <div x-show="w.background_tasks?.length" class="space-y-0.5">
             <template x-for="(bt, i) in (w.background_tasks||[])" :key="i">
               <div class="text-[10px] text-amber-700 bg-amber-50 rounded px-1.5 py-0.5 truncate">
-                <span class="font-medium" x-text="bt.type === 'monitor' ? 'Monitor' : 'Bash bg'"></span>:
+                <span class="font-medium" x-text="bt.type === 'monitor' ? 'Monitor' : (bt.type === 'workflow' ? 'Workflow' : 'Bash bg')"></span>:
                 <span x-text="bt.description || bt.command"></span>
               </div>
             </template>
@@ -739,6 +750,15 @@ function fleet() {
       if (cr.source === 'mcp') return `🔍 Codex 审查中（MCP）· 已 ${elapsed} · 无实时输出`;
       const silent = cr.silent_s != null ? ` · 最后输出 ${fmt(cr.silent_s)} 前` : '';
       return `🔍 Codex 审查中 · 已 ${elapsed}${silent}`;
+    },
+
+    workflowHeadline(wf) {
+      if (!wf) return '';
+      const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
+      const elapsed = fmt(wf.elapsed_s || 0);
+      const prog = wf.agents_started ? ` · agents ${wf.agents_done || 0}/${wf.agents_started}` : '';
+      if (wf.stalled) return `⚙️ Workflow ${wf.name} 疑似卡死 · 已 ${elapsed}${prog} · 无新输出 ${fmt(wf.silent_s || 0)}`;
+      return `⚙️ Workflow ${wf.name} 运行中 · 已 ${elapsed}${prog}`;
     },
 
     async focusWindow(pid) {

@@ -131,6 +131,29 @@ def classify(window_dict: dict) -> dict:
             "suggestion": "",
         }
 
+    # A live Workflow run: multi-agent fan-out executing in the background.
+    # The main turn usually ends right after launching it, so without this
+    # the card would read "completed" while dozens of agents still work.
+    wf = window_dict.get("workflow_run")
+    if wf:
+        name = wf.get("name") or "workflow"
+        elapsed = _format_idle(wf.get("elapsed_s") or 0)
+        prog = ""
+        if wf.get("agents_started"):
+            prog = f"，agents {wf.get('agents_done') or 0}/{wf['agents_started']} 完成"
+        if wf.get("stalled"):
+            silent = _format_idle(wf.get("silent_s") or 0)
+            return {
+                "triage": "stalled",
+                "reason": f"Workflow {name} 疑似卡死：已 {elapsed}{prog}，无新输出 {silent}",
+                "suggestion": "用 /workflows 查看进度，必要时 TaskStop 后 resume",
+            }
+        return {
+            "triage": "working",
+            "reason": f"Workflow {name} 运行中 · 已 {elapsed}{prog}",
+            "suggestion": "",
+        }
+
     # Session is waiting on GPU work: either sleeping on a ScheduleWakeup
     # (has a concrete wake time) or running a background waiter (poll loop).
     # Without this it would read as generic "working" / "stalled 停在 ScheduleWakeup".

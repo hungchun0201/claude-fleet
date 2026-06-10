@@ -159,6 +159,7 @@ def _enriched_snapshot() -> dict:
         if tp:
             w["current_task"] = transcripts.current_task_hint(tp)
             w["background_tasks"] = transcripts.extract_background_tasks(tp)
+            w["workflow_run"] = transcripts.active_workflow_run(w["background_tasks"])
             # Sleeping on a ScheduleWakeup wins (it has a concrete wake time);
             # otherwise an active GPU background waiter also counts as waiting.
             w["pending_wakeup"] = (
@@ -170,6 +171,7 @@ def _enriched_snapshot() -> dict:
         else:
             w["current_task"] = None
             w["background_tasks"] = []
+            w["workflow_run"] = None
             w["pending_wakeup"] = None
         # In-flight MCP codex calls leave no transcript row; only look for
         # the marker on busy windows without an exec-style codex child.

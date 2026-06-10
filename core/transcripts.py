@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -563,6 +564,19 @@ _CODEX_TASK_RE = re.compile(r"\bcodex\s+(?:exec|mcp)\b|codex\s+review", re.IGNOR
 _SSH_HOST_RE = re.compile(r"\bssh\s+((?:-[A-Za-z]\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*)([A-Za-z0-9_.@-]+)")
 _JOB_IDS_RE = re.compile(r"-j\s*([0-9][0-9,]*)")
 _BG_OUTPUT_FILE_RE = re.compile(r"Output is being written to:\s*(\S+)")
+# Workflow runs share the bg-task lifecycle: immediate spawn ack ("Workflow
+# launched in background. Task ID: ... You will be notified when it
+# completes"), then a <task-notification> on completion. The ack also carries
+# the run's transcript dir, whose journal.jsonl gives live agent progress.
+_WF_ACK_DIR_RE = re.compile(r"Transcript dir:\s*(\S+)")
+_WF_ACK_SUMMARY_RE = re.compile(r"Summary:\s*([^\n]+)")
+_WF_ACK_RUN_ID_RE = re.compile(r"Run ID:\s*(wf_[a-z0-9-]+)")
+# meta.name from an inline script. `export const meta = {...}` is required to
+# be the first statement, so the first name: in the text is meta's.
+_WF_META_NAME_RE = re.compile(r"\bname:\s*['\"]([^'\"\n]{1,80})['\"]")
+# No journal/agent-transcript writes for this long → presumed hung
+# (mirrors codex.EXEC_STALL_THRESHOLD_S).
+_WORKFLOW_STALL_THRESHOLD_S = 15 * 60
 
 
 def _result_text(c: dict) -> str:
@@ -572,6 +586,22 @@ def _result_text(c: dict) -> str:
     if isinstance(cv, list):
         return " ".join(x.get("text", "") for x in cv if isinstance(x, dict))
     return str(cv or "")
+
+
+def _workflow_name_from_input(inp: dict) -> str:
+    """Best-effort workflow name: explicit name > script meta > scriptPath stem."""
+    name = str(inp.get("name") or "")
+    if name:
+        return name[:80]
+    m = _WF_META_NAME_RE.search(str(inp.get("script") or ""))
+    if m:
+        return m.group(1)
+    sp = str(inp.get("scriptPath") or "")
+    if sp:
+        stem = sp.rsplit("/", 1)[-1].removesuffix(".js")
+        # Persisted scripts are named <meta-name>-<run-id>.js
+        return re.sub(r"-wf_[a-z0-9-]+$", "", stem)[:80]
+    return ""
 
 
 def extract_background_tasks(path: str | Path) -> list[dict]:
@@ -604,7 +634,26 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                 name = c.get("name", "")
                 inp = c.get("input") or {}
                 tid = c.get("id", "")
-                if (name == "Bash" and inp.get("run_in_background") and tid) or \
+                if name == "Workflow" and tid:
+                    # Workflows always run in background; same ack/notification
+                    # lifecycle as bg Bash. Description comes from the ack's
+                    # Summary line during resolution.
+                    bg_uses[tid] = {
+                        "type": "workflow",
+                        "description": "",
+                        "command": "",
+                        "started_ts": d.get("timestamp") or "",
+                        "task_id": None,
+                        "output_file": None,
+                        "poll_interval_s": None,
+                        "ssh_host": None,
+                        "job_ids": [],
+                        "is_gpu": False,
+                        "workflow_name": _workflow_name_from_input(inp),
+                        "workflow_dir": None,
+                        "run_id": None,
+                    }
+                elif (name == "Bash" and inp.get("run_in_background") and tid) or \
                    (name == "Monitor" and inp.get("persistent") and tid):
                     cmd = str(inp.get("command") or "")
                     desc = str(inp.get("description") or "")
@@ -644,9 +693,15 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                     id_m = _BG_TASK_ID_RE.search(txt)
                     if not c.get("is_error") and id_m and _BG_SPAWN_ACK_RE.search(txt):
                         out_m = _BG_OUTPUT_FILE_RE.search(txt)
+                        dir_m = _WF_ACK_DIR_RE.search(txt)
+                        sum_m = _WF_ACK_SUMMARY_RE.search(txt)
+                        run_m = _WF_ACK_RUN_ID_RE.search(txt)
                         ack_by_use.setdefault(tu, {
                             "task_id": id_m.group(1),
                             "output_file": out_m.group(1).rstrip(".") if out_m else None,
+                            "workflow_dir": dir_m.group(1) if dir_m else None,
+                            "summary": sum_m.group(1).strip() if sum_m else None,
+                            "run_id": run_m.group(1) if run_m else None,
                         })
                     else:
                         plain_result_ids.add(tu)
@@ -683,6 +738,11 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
         ack = ack_by_use.get(tu) or {}
         task["task_id"] = ack.get("task_id")
         task["output_file"] = ack.get("output_file")
+        if task["type"] == "workflow":
+            task["workflow_dir"] = ack.get("workflow_dir")
+            task["run_id"] = ack.get("run_id")
+            if ack.get("summary"):
+                task["description"] = str(ack["summary"])[:200]
         if tu in resolved:
             continue
         if task["task_id"] and task["task_id"] in stopped_tasks:
@@ -718,6 +778,73 @@ def gpu_wait_from_background(tasks: list[dict]) -> Optional[dict]:
             "output_file": t.get("output_file"),
             "overdue": False,
         }
+    return None
+
+
+def _workflow_dir_progress(d: Path) -> Optional[dict]:
+    """Agent counts from journal.jsonl + freshness from file mtimes.
+
+    The run dir holds journal.jsonl plus one agent-<id>.jsonl per spawned
+    agent; live agents append constantly, so the newest mtime across the dir
+    is a good "still alive" signal.
+    """
+    try:
+        entries = list(os.scandir(d))
+    except OSError:
+        return None
+    last_mtime = 0.0
+    for e in entries:
+        try:
+            last_mtime = max(last_mtime, e.stat().st_mtime)
+        except OSError:
+            continue
+    started = done = 0
+    for row in _iter_lines(d / "journal.jsonl"):
+        rt = row.get("type")
+        if rt == "started":
+            started += 1
+        elif rt in ("result", "error"):
+            done += 1
+    return {
+        "agents_started": started,
+        "agents_done": done,
+        "silent_s": max(0, int(time.time() - last_mtime)) if last_mtime else None,
+    }
+
+
+def active_workflow_run(tasks: list[dict]) -> Optional[dict]:
+    """Most recent active Workflow run, enriched with live journal progress.
+
+    A workflow runs in the background while the main turn usually ends —
+    without this signal the session would triage as "completed" even with
+    dozens of agents still working. Stalled = no file writes in the run dir
+    for _WORKFLOW_STALL_THRESHOLD_S.
+    """
+    for t in reversed(tasks or []):
+        if t.get("type") != "workflow":
+            continue
+        now_ms = int(time.time() * 1000)
+        started_ms = _parse_ts_ms(t.get("started_ts") or "")
+        run = {
+            "name": t.get("workflow_name") or "workflow",
+            "description": (t.get("description") or "")[:200],
+            "task_id": t.get("task_id"),
+            "run_id": t.get("run_id"),
+            "started_at_ms": started_ms,
+            "elapsed_s": max(0, (now_ms - started_ms) // 1000) if started_ms else None,
+            "agents_started": None,
+            "agents_done": None,
+            "silent_s": None,
+            "stalled": False,
+        }
+        wf_dir = t.get("workflow_dir")
+        if wf_dir:
+            prog = _workflow_dir_progress(Path(wf_dir))
+            if prog:
+                run.update(prog)
+                silent = run.get("silent_s")
+                run["stalled"] = silent is not None and silent > _WORKFLOW_STALL_THRESHOLD_S
+        return run
     return None
 
 
