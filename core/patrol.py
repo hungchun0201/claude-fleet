@@ -105,8 +105,8 @@ def classify(window_dict: dict) -> dict:
     if status == "waiting":
         return {
             "triage": "waiting_perm",
-            "reason": window_dict.get("waiting_for") or "等待授权",
-            "suggestion": "去终端批准",
+            "reason": window_dict.get("waiting_for") or "等待授權",
+            "suggestion": "到終端機批准",
         }
 
     # Session is running a Codex review (exec child process or in-flight MCP
@@ -116,20 +116,20 @@ def classify(window_dict: dict) -> dict:
         elapsed = _format_idle(cr.get("elapsed_s") or 0)
         if cr.get("stalled"):
             if cr.get("stall_reason") == "no_rollout":
-                reason = f"Codex 审查疑似卡死：进程已 {elapsed} 却从未写入 rollout（典型 stdin 挂起）"
+                reason = f"Codex 審查疑似卡死：行程已 {elapsed} 卻從未寫入 rollout（典型 stdin 卡住）"
             else:
                 silent = _format_idle(cr.get("silent_s") or 0)
-                reason = f"Codex 审查疑似卡死：已 {elapsed}，输出停滞 {silent}"
+                reason = f"Codex 審查疑似卡死：已 {elapsed}，輸出停滯 {silent}"
             return {
                 "triage": "stalled",
                 "reason": reason,
-                "suggestion": "查看 Codex 进度，考虑重启该审查",
+                "suggestion": "查看 Codex 進度，考慮重啟該審查",
             }
         act = (cr.get("current_action") or "")[:70]
-        tail = f"。{act}" if act else ("（MCP 调用，无实时输出）" if cr.get("source") == "mcp" else "")
+        tail = f"。{act}" if act else ("（MCP 呼叫，無即時輸出）" if cr.get("source") == "mcp" else "")
         return {
             "triage": "working",
-            "reason": f"Codex 审查中 · 已 {elapsed}{tail}",
+            "reason": f"Codex 審查中 · 已 {elapsed}{tail}",
             "suggestion": "",
         }
 
@@ -147,12 +147,12 @@ def classify(window_dict: dict) -> dict:
             silent = _format_idle(wf.get("silent_s") or 0)
             return {
                 "triage": "stalled",
-                "reason": f"Workflow {name} 疑似卡死：已 {elapsed}{prog}，无新输出 {silent}",
-                "suggestion": "用 /workflows 查看进度，必要时 TaskStop 后 resume",
+                "reason": f"Workflow {name} 疑似卡死：已 {elapsed}{prog}，無新輸出 {silent}",
+                "suggestion": "用 /workflows 查看進度，必要時 TaskStop 後 resume",
             }
         return {
             "triage": "working",
-            "reason": f"Workflow {name} 运行中 · 已 {elapsed}{prog}",
+            "reason": f"Workflow {name} 執行中 · 已 {elapsed}{prog}",
             "suggestion": "",
         }
 
@@ -161,7 +161,7 @@ def classify(window_dict: dict) -> dict:
     # Without this it would read as generic "working" / "stalled 停在 ScheduleWakeup".
     pw = window_dict.get("pending_wakeup")
     if pw:
-        label = "等 GPU" if pw.get("kind") == "gpu" else "等待定时唤醒"
+        label = "等 GPU" if pw.get("kind") == "gpu" else "等待定時喚醒"
         why = (pw.get("reason") or "").split("\n")[0][:80]
         wake_ms = pw.get("wake_at_ms")
         if wake_ms:
@@ -169,21 +169,21 @@ def classify(window_dict: dict) -> dict:
             if pw.get("overdue"):
                 return {
                     "triage": "stalled",
-                    "reason": f"{label}，唤醒已过期（原定 {wake_hhmm}）。{why}",
-                    "suggestion": "检查会话是否卡住",
+                    "reason": f"{label}，喚醒已過期（原定 {wake_hhmm}）。{why}",
+                    "suggestion": "檢查 session 是否卡住",
                 }
             return {
                 "triage": "working",
-                "reason": f"{label} · 下次唤醒 {wake_hhmm}。{why}",
+                "reason": f"{label} · 下次喚醒 {wake_hhmm}。{why}",
                 "suggestion": "",
             }
         itv = pw.get("poll_interval_s")
         if itv and itv >= 60:
-            cadence = f"后台 waiter 每 ~{itv // 60}m 检查"
+            cadence = f"背景 waiter 每 ~{itv // 60}m 檢查"
         elif itv:
-            cadence = f"后台 waiter 每 {itv}s 检查"
+            cadence = f"背景 waiter 每 {itv}s 檢查"
         else:
-            cadence = "后台 waiter 监控中"
+            cadence = "背景 waiter 監控中"
         return {
             "triage": "working",
             "reason": f"{label}（{cadence}）。{why}",
@@ -193,30 +193,30 @@ def classify(window_dict: dict) -> dict:
     if status == "busy" and idle < IDLE_THRESHOLD:
         return {
             "triage": "working",
-            "reason": "正在工作",
+            "reason": "工作中",
             "suggestion": "",
         }
 
     if status == "shell":
         return {
             "triage": "working",
-            "reason": "shell 进程运行中",
+            "reason": "shell 行程執行中",
             "suggestion": "",
         }
 
     if not transcript:
         return {
             "triage": "closeable",
-            "reason": "无 transcript 记录",
-            "suggestion": "可以关闭",
+            "reason": "無 transcript 紀錄",
+            "suggestion": "可以關閉",
         }
 
     info = _last_assistant_info(transcript)
     if not info:
         return {
             "triage": "closeable",
-            "reason": "transcript 为空",
-            "suggestion": "可以关闭",
+            "reason": "transcript 是空的",
+            "suggestion": "可以關閉",
         }
 
     stop = info["stop_reason"]
@@ -229,10 +229,10 @@ def classify(window_dict: dict) -> dict:
     if bg:
         latest = bg[-1]
         what = (latest.get("description") or latest.get("command") or "")[:60]
-        count = f"{len(bg)} 个" if len(bg) > 1 else ""
+        count = f"{len(bg)} 個" if len(bg) > 1 else ""
         return {
             "triage": "working",
-            "reason": f"后台任务{count}执行中：{what}",
+            "reason": f"背景任務{count}執行中：{what}",
             "suggestion": "",
         }
 
@@ -240,7 +240,7 @@ def classify(window_dict: dict) -> dict:
         summary = info["last_text"].split("\n")[0][:80] if info["last_text"] else ""
         return {
             "triage": "working",
-            "reason": f"有后台任务在执行。{summary}",
+            "reason": f"有背景任務執行中。{summary}",
             "suggestion": "",
         }
 
@@ -249,13 +249,13 @@ def classify(window_dict: dict) -> dict:
         if idle >= CLOSEABLE_THRESHOLD:
             return {
                 "triage": "closeable",
-                "reason": f"已完成，空闲 {idle_str}。{summary}",
-                "suggestion": "可以关闭",
+                "reason": f"已完成，閒置 {idle_str}。{summary}",
+                "suggestion": "可以關閉",
             }
         return {
             "triage": "completed",
-            "reason": f"已完成，空闲 {idle_str}。{summary}",
-            "suggestion": "建议 review",
+            "reason": f"已完成，閒置 {idle_str}。{summary}",
+            "suggestion": "建議 review",
         }
 
     if stop == "tool_use":
@@ -263,25 +263,25 @@ def classify(window_dict: dict) -> dict:
         if status == "busy":
             return {
                 "triage": "working",
-                "reason": f"正在执行 {tool}" if tool else "正在工作",
+                "reason": f"正在執行 {tool}" if tool else "工作中",
                 "suggestion": "",
             }
         return {
             "triage": "stalled",
-            "reason": f"停在 {tool}，空闲 {idle_str}" if tool else f"中途停止，空闲 {idle_str}",
-            "suggestion": "需要用户介入",
+            "reason": f"停在 {tool}，閒置 {idle_str}" if tool else f"中途停止，閒置 {idle_str}",
+            "suggestion": "需要使用者介入",
         }
 
     # Fallback
     if idle >= CLOSEABLE_THRESHOLD:
         return {
             "triage": "closeable",
-            "reason": f"空闲 {idle_str}",
-            "suggestion": "可以关闭",
+            "reason": f"閒置 {idle_str}",
+            "suggestion": "可以關閉",
         }
     return {
         "triage": "completed" if idle >= IDLE_THRESHOLD else "working",
-        "reason": f"空闲 {idle_str}",
+        "reason": f"閒置 {idle_str}",
         "suggestion": "",
     }
 

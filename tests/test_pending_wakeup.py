@@ -253,7 +253,7 @@ def test_classify_pending_gpu_wakeup_is_working(tmp_path):
     tri = classify(_window(pw))
     assert tri["triage"] == "working"
     assert "等 GPU" in tri["reason"]
-    assert "下次唤醒" in tri["reason"]
+    assert "下次喚醒" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -261,7 +261,7 @@ def test_classify_overdue_wakeup_is_stalled(tmp_path):
     pw = {"kind": "gpu", "reason": GPU_REASON, "wake_at_ms": NOW_MS - 600_000, "overdue": True}
     tri = classify(_window(pw, status="idle"))
     assert tri["triage"] == "stalled"
-    assert "唤醒已过期" in tri["reason"]
+    assert "喚醒已過期" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -269,7 +269,7 @@ def test_classify_generic_wakeup_label(tmp_path):
     pw = {"kind": "generic", "reason": "idle tick", "wake_at_ms": NOW_MS + 600_000, "overdue": False}
     tri = classify(_window(pw))
     assert tri["triage"] == "working"
-    assert "等待定时唤醒" in tri["reason"]
+    assert "等待定時喚醒" in tri["reason"]
 
 
 @pytest.mark.unit

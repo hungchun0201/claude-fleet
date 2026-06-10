@@ -137,7 +137,7 @@ def _render_session_markdown(pid: int, limit: int = 80) -> Optional[tuple[str, s
     lines.append("")
 
     if plan_hist:
-        lines.append("## Plan 历史")
+        lines.append("## Plan 歷史")
         lines.append("")
         for ph in plan_hist:
             ts = (ph.get("ts") or "")[:19]
@@ -154,7 +154,7 @@ def _render_session_markdown(pid: int, limit: int = 80) -> Optional[tuple[str, s
                 lines.append("```")
             lines.append("")
 
-    lines.append("## 时间线")
+    lines.append("## 時間軸")
     lines.append("")
     for ev in events:
         ts = (ev.get("ts") or "")[:19]
@@ -282,16 +282,16 @@ def review_session_start(pid: int) -> dict:
     summary = _build_review_summary(transcript, limit=40)
 
     prompt = (
-        f"请 review 以下 Claude Code session 的工作成果。\n"
+        f"請 review 以下 Claude Code session 的工作成果。\n"
         f"Session: {name}\n"
         f"CWD: {w.cwd}\n\n"
-        f"## 最近对话记录\n\n{summary}\n\n"
-        f"请检查：\n"
-        f"1. 任务是否完成\n"
-        f"2. 有无低级错误或遗漏\n"
-        f"3. 有无安全问题\n"
-        f"4. 给出结论：PASS（可以关闭） / FAIL（需要继续或修复） / PARTIAL（部分完成）\n"
-        f"用中文回答，200字以内。"
+        f"## 最近對話紀錄\n\n{summary}\n\n"
+        f"請檢查：\n"
+        f"1. 任務是否完成\n"
+        f"2. 有無明顯錯誤或遺漏\n"
+        f"3. 有無安全問題\n"
+        f"4. 給出結論：PASS（可以關閉） / FAIL（需要繼續或修復） / PARTIAL（部分完成）\n"
+        f"用繁體中文（台灣用詞）回答，200 字以內。"
     )
 
     prompt_file = Path(f"/tmp/fleet-review-{pid}.txt")
@@ -348,7 +348,7 @@ def close_session(pid: int) -> dict:
     return {"ok": True, "pid": pid, "message": f"SIGTERM sent to {pid}"}
 
 
-_REVIEW_PROMPT = "请 review 你刚才做的工作，检查是否有低级错误、遗漏、安全问题。列出发现的问题和修复建议。"
+_REVIEW_PROMPT = "請用繁體中文（台灣用詞）review 你剛才做的工作，檢查是否有明顯錯誤、遺漏、安全問題。列出發現的問題和修復建議。"
 
 
 def review_session(pid: int) -> dict:

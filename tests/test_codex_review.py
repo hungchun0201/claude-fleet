@@ -274,7 +274,7 @@ def test_classify_codex_review_working():
                           "silent_s": None, "current_action": None}}
     tri = classify(w)
     assert tri["triage"] == "working"
-    assert "Codex 审查中" in tri["reason"]
+    assert "Codex 審查中" in tri["reason"]
 
 
 @pytest.mark.unit

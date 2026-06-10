@@ -22,14 +22,14 @@ def _snap(*windows):
 def _stalled_window(pid=100, name="paper-review", sid="sid-1"):
     return {
         "pid": pid, "name": name, "triage": "stalled",
-        "triage_reason": "Codex 审查疑似卡死：已 6h36m，输出停滞 6h30m",
+        "triage_reason": "Codex 審查疑似卡死：已 6h36m，輸出停滯 6h30m",
         "codex_review": {"source": "mcp", "stalled": True, "codex_session_id": sid},
     }
 
 
 def _working_window(pid=100, name="paper-review"):
     return {"pid": pid, "name": name, "triage": "working",
-            "triage_reason": "正在工作", "codex_review": None}
+            "triage_reason": "工作中", "codex_review": None}
 
 
 @pytest.mark.unit

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-Hant-TW">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -259,7 +259,7 @@
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.pending_wakeup"
                   :class="w.pending_wakeup?.overdue ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'"
-                  x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ 等GPU' : '⏳ 定时唤醒'"></span>
+                  x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ 等GPU' : '⏳ 定時喚醒'"></span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.codex_review"
                   :class="w.codex_review?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'"
@@ -285,7 +285,7 @@
                  class="mt-1 bg-white/70 rounded p-1 text-[10px] leading-tight max-h-28 overflow-y-auto whitespace-pre font-mono text-indigo-900"
                  x-text="w.pending_wakeup?.last_poll?.text"></pre>
             <div class="opacity-70 text-[10px]" x-show="w.pending_wakeup?.last_poll"
-                 x-text="(w.pending_wakeup?.last_poll?.source === 'waiter' ? 'waiter 输出 · ' : 'queue poll · ') + fmtAgo(w.pending_wakeup?.last_poll?.ago_s)"></div>
+                 x-text="(w.pending_wakeup?.last_poll?.source === 'waiter' ? 'waiter 輸出 · ' : 'queue poll · ') + fmtAgo(w.pending_wakeup?.last_poll?.ago_s)"></div>
           </div>
           <!-- Live Codex review (exec child process or in-flight MCP call) -->
           <div x-show="w.codex_review" class="rounded px-1.5 py-1 border text-[11px]"
@@ -295,7 +295,7 @@
               <button x-show="w.codex_review?.codex_session_id" @click.stop="openHistoryTimeline(w.codex_review.codex_session_id)"
                       class="border rounded px-1 text-[10px] hover:bg-violet-100 shrink-0"
                       :class="w.codex_review?.stalled ? 'border-amber-300 text-amber-700' : 'border-violet-300 text-violet-700'">
-                Codex 进度</button>
+                Codex 進度</button>
             </div>
             <div class="truncate opacity-80" x-show="w.codex_review?.current_action" x-text="w.codex_review?.current_action"></div>
           </div>
@@ -392,9 +392,9 @@
           <button @click="showCurrentPlan(expandedPid || timelineData?.session_id)"
                   class="text-xs border border-purple-400 text-purple-700 px-2 py-0.5 rounded hover:bg-purple-100 font-medium"
                   :class="planData ? 'bg-purple-100' : ''">
-            查看当前 plan
+            查看目前 plan
           </button>
-          <span class="text-xs text-gray-500" x-text="'· ' + (timelineData?.plan_history?.length || 0) + ' 个历史版本'"></span>
+          <span class="text-xs text-gray-500" x-text="'· ' + (timelineData?.plan_history?.length || 0) + ' 個歷史版本'"></span>
         </div>
         <button @click="showPlanHistory = false" class="text-purple-400 hover:text-purple-700">&times;</button>
       </div>
@@ -686,7 +686,7 @@ function fleet() {
       }
       this._applyHashRoute();
       window.addEventListener('hashchange', () => this._applyHashRoute());
-      // Keep wakeup countdowns ("约 Xm 后") fresh between SSE snapshots.
+      // Keep wakeup countdowns ("約 Xm 後") fresh between SSE snapshots.
       setInterval(() => { this.nowTick = Date.now(); }, 30000);
     },
 
@@ -719,20 +719,20 @@ function fleet() {
 
     wakeupHeadline(pw) {
       if (!pw) return '';
-      const label = pw.kind === 'gpu' ? '⏳ 等 GPU' : '⏳ 定时唤醒';
+      const label = pw.kind === 'gpu' ? '⏳ 等 GPU' : '⏳ 定時喚醒';
       if (!pw.wake_at_ms) {
         // Background waiter: no scheduled wake time, show the poll cadence.
         const itv = pw.poll_interval_s;
         const cadence = itv
-          ? (itv >= 60 ? `后台 waiter 每 ~${Math.round(itv / 60)}m check` : `后台 waiter 每 ${itv}s check`)
-          : '后台 waiter 监控中';
+          ? (itv >= 60 ? `背景 waiter 每 ~${Math.round(itv / 60)}m check` : `背景 waiter 每 ${itv}s check`)
+          : '背景 waiter 監控中';
         return `${label} · ${cadence}`;
       }
       const hhmm = new Date(pw.wake_at_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const mins = Math.round((pw.wake_at_ms - this.nowTick) / 60000);
-      if (pw.overdue) return `${label} · 原定 ${hhmm}，已过期 ${Math.max(1, -mins)}m`;
-      if (mins <= 0) return `${label} · 下次check ${hhmm}（即将唤醒）`;
-      return `${label} · 下次check ${hhmm}（约 ${mins}m 后）`;
+      if (pw.overdue) return `${label} · 原定 ${hhmm}，已過期 ${Math.max(1, -mins)}m`;
+      if (mins <= 0) return `${label} · 下次check ${hhmm}（即將喚醒）`;
+      return `${label} · 下次check ${hhmm}（約 ${mins}m 後）`;
     },
 
     fmtAgo(s) {
@@ -746,10 +746,10 @@ function fleet() {
       if (!cr) return '';
       const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
       const elapsed = fmt(cr.elapsed_s || 0);
-      if (cr.stalled) return `🔍 Codex 审查疑似卡死 · 已 ${elapsed} · 输出停滞 ${fmt(cr.silent_s || 0)}`;
-      if (cr.source === 'mcp') return `🔍 Codex 审查中（MCP）· 已 ${elapsed} · 无实时输出`;
-      const silent = cr.silent_s != null ? ` · 最后输出 ${fmt(cr.silent_s)} 前` : '';
-      return `🔍 Codex 审查中 · 已 ${elapsed}${silent}`;
+      if (cr.stalled) return `🔍 Codex 審查疑似卡死 · 已 ${elapsed} · 輸出停滯 ${fmt(cr.silent_s || 0)}`;
+      if (cr.source === 'mcp') return `🔍 Codex 審查中（MCP）· 已 ${elapsed} · 無即時輸出`;
+      const silent = cr.silent_s != null ? ` · 最後輸出 ${fmt(cr.silent_s)} 前` : '';
+      return `🔍 Codex 審查中 · 已 ${elapsed}${silent}`;
     },
 
     workflowHeadline(wf) {
@@ -757,8 +757,8 @@ function fleet() {
       const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
       const elapsed = fmt(wf.elapsed_s || 0);
       const prog = wf.agents_started ? ` · agents ${wf.agents_done || 0}/${wf.agents_started}` : '';
-      if (wf.stalled) return `⚙️ Workflow ${wf.name} 疑似卡死 · 已 ${elapsed}${prog} · 无新输出 ${fmt(wf.silent_s || 0)}`;
-      return `⚙️ Workflow ${wf.name} 运行中 · 已 ${elapsed}${prog}`;
+      if (wf.stalled) return `⚙️ Workflow ${wf.name} 疑似卡死 · 已 ${elapsed}${prog} · 無新輸出 ${fmt(wf.silent_s || 0)}`;
+      return `⚙️ Workflow ${wf.name} 執行中 · 已 ${elapsed}${prog}`;
     },
 
     async focusWindow(pid) {
