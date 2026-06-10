@@ -23,20 +23,7 @@ STATIC_DIR = HERE / "static"
 class State:
     def __init__(self) -> None:
         self.last_snapshot: dict = {"windows": [], "counts": {}, "ts": 0}
-        self.last_signature: tuple = ()
         self.subscribers: set[asyncio.Queue] = set()
-
-    def diff_signature(self, snap: dict) -> tuple:
-        # Tuple of (pid, status, waiting_for, updated_at, wake_at, overdue)
-        # lets us tell whether anything dashboard-visible has changed. overdue
-        # matters: it flips server-side with no other field changing, and it
-        # drives the working→stalled triage transition.
-        return tuple(
-            (w["pid"], w["status"], w["waiting_for"], w["updated_at"],
-             (w.get("pending_wakeup") or {}).get("wake_at_ms"),
-             (w.get("pending_wakeup") or {}).get("overdue"))
-            for w in snap["windows"]
-        )
 
 
 state = State()
@@ -87,23 +74,25 @@ def _enriched_snapshot() -> dict:
 
 
 async def _watcher() -> None:
-    """Poll sessions every 2s; broadcast deltas to SSE subscribers."""
+    """Poll sessions every 2s; broadcast each tick to SSE subscribers.
+
+    Every tick is pushed unconditionally (aris-monitor style) so idle times,
+    task hints, and time-driven triage flips stay live in the browser. The
+    frontend patches DOM in place (Alpine keyed by pid) — no page reload.
+    """
     while True:
         try:
             snap = _enriched_snapshot()
-            sig = state.diff_signature(snap)
             state.last_snapshot = snap
-            if sig != state.last_signature:
-                state.last_signature = sig
-                payload = json.dumps(snap)
-                dead: list[asyncio.Queue] = []
-                for q in list(state.subscribers):
-                    try:
-                        q.put_nowait(payload)
-                    except asyncio.QueueFull:
-                        dead.append(q)
-                for q in dead:
-                    state.subscribers.discard(q)
+            payload = json.dumps(snap)
+            dead: list[asyncio.Queue] = []
+            for q in list(state.subscribers):
+                try:
+                    q.put_nowait(payload)
+                except asyncio.QueueFull:
+                    dead.append(q)
+            for q in dead:
+                state.subscribers.discard(q)
         except Exception as e:
             print(f"[watcher] error: {e}")
         await asyncio.sleep(2)
