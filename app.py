@@ -29,6 +29,104 @@ class State:
 state = State()
 
 
+# ---------- remote GPU queue polling ----------
+#
+# GPU waiters often run quiet loops (grep -q), so their output files show
+# nothing between checks. The dashboard polls the queue itself: every
+# GPU_POLL_INTERVAL_S it runs sacct+squeue over ssh for the job ids parsed
+# from the waiter command, and the snapshot attaches the latest result.
+
+GPU_POLL_INTERVAL_S = 180
+GPU_POLL_SSH_TIMEOUT_S = 25
+
+_gpu_poll_cache: dict[tuple, dict] = {}
+_gpu_poll_inflight: set[tuple] = set()
+
+
+def _gpu_poll_targets() -> set[tuple]:
+    targets: set[tuple] = set()
+    for w in state.last_snapshot.get("windows", []):
+        pw = w.get("pending_wakeup") or {}
+        host, ids = pw.get("ssh_host"), pw.get("job_ids")
+        if host and ids and all(i.isdigit() for i in ids):
+            targets.add((host, tuple(ids)))
+    return targets
+
+
+async def _poll_one(host: str, ids: tuple) -> None:
+    key = (host, ids)
+    _gpu_poll_inflight.add(key)
+    try:
+        idstr = ",".join(ids)
+        remote = (
+            f"sacct -j {idstr} -X -n -o JobID%-9,JobName%-24,State%-10,Elapsed%-11 2>/dev/null; "
+            f"squeue -j {idstr} -h -o '%i %T est-start:%S' -t PD 2>/dev/null"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "ConnectTimeout=15", "-o", "BatchMode=yes", host, remote,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=GPU_POLL_SSH_TIMEOUT_S)
+        text = out.decode(errors="replace").strip()
+        if proc.returncode == 0 and text:
+            _gpu_poll_cache[key] = {"ts_ms": int(time.time() * 1000), "text": text[:1500], "ok": True}
+        elif key not in _gpu_poll_cache:
+            _gpu_poll_cache[key] = {"ts_ms": int(time.time() * 1000), "text": "", "ok": False}
+    except Exception:
+        if key not in _gpu_poll_cache:
+            _gpu_poll_cache[key] = {"ts_ms": int(time.time() * 1000), "text": "", "ok": False}
+    finally:
+        _gpu_poll_inflight.discard(key)
+
+
+async def _gpu_poller() -> None:
+    while True:
+        try:
+            now_ms = int(time.time() * 1000)
+            for key in _gpu_poll_targets():
+                cached = _gpu_poll_cache.get(key)
+                fresh = cached and (now_ms - cached["ts_ms"]) < GPU_POLL_INTERVAL_S * 1000
+                if not fresh and key not in _gpu_poll_inflight:
+                    asyncio.create_task(_poll_one(*key))
+        except Exception as e:
+            print(f"[gpu-poller] error: {e}")
+        await asyncio.sleep(5)
+
+
+def _attach_last_poll(pw: dict) -> None:
+    """Decorate a GPU-wait record with the latest queue state we know."""
+    host, ids = pw.get("ssh_host"), pw.get("job_ids")
+    now_ms = int(time.time() * 1000)
+    if host and ids:
+        cached = _gpu_poll_cache.get((host, tuple(ids)))
+        if cached and cached.get("ok"):
+            pw["last_poll"] = {
+                "text": cached["text"],
+                "ago_s": max(0, (now_ms - cached["ts_ms"]) // 1000),
+                "source": "dashboard",
+            }
+            return
+    # Fallback: tail of the waiter's own output file (chatty waiters).
+    of = pw.get("output_file")
+    if of:
+        try:
+            p = Path(of)
+            st = p.stat()
+            if st.st_size > 0:
+                with p.open("rb") as f:
+                    f.seek(max(0, st.st_size - 1500))
+                    tail = f.read().decode(errors="replace").strip()
+                pw["last_poll"] = {
+                    "text": tail[-1200:],
+                    "ago_s": max(0, int(time.time() - st.st_mtime)),
+                    "source": "waiter",
+                }
+                return
+        except OSError:
+            pass
+    pw["last_poll"] = None
+
+
 def _ui_version() -> str:
     """Frontend build stamp; the client hard-reloads when it changes."""
     try:
@@ -67,6 +165,8 @@ def _enriched_snapshot() -> dict:
                 transcripts.extract_pending_wakeup(tp)
                 or transcripts.gpu_wait_from_background(w["background_tasks"])
             )
+            if w["pending_wakeup"]:
+                _attach_last_poll(w["pending_wakeup"])
         else:
             w["current_task"] = None
             w["background_tasks"] = []
@@ -122,11 +222,12 @@ async def _watcher() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(_watcher())
+    tasks = [asyncio.create_task(_watcher()), asyncio.create_task(_gpu_poller())]
     try:
         yield
     finally:
-        task.cancel()
+        for t in tasks:
+            t.cancel()
 
 
 app = FastAPI(title="Claude Fleet", lifespan=lifespan)

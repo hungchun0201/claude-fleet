@@ -276,6 +276,12 @@
                :title="w.pending_wakeup?.reason">
             <div class="font-medium" x-text="wakeupHeadline(w.pending_wakeup)"></div>
             <div class="truncate opacity-80" x-show="w.pending_wakeup?.reason" x-text="w.pending_wakeup?.reason"></div>
+            <!-- Latest queue state (dashboard sacct/squeue poll, or waiter output tail) -->
+            <pre x-show="w.pending_wakeup?.last_poll?.text"
+                 class="mt-1 bg-white/70 rounded p-1 text-[10px] leading-tight max-h-28 overflow-y-auto whitespace-pre font-mono text-indigo-900"
+                 x-text="w.pending_wakeup?.last_poll?.text"></pre>
+            <div class="opacity-70 text-[10px]" x-show="w.pending_wakeup?.last_poll"
+                 x-text="(w.pending_wakeup?.last_poll?.source === 'waiter' ? 'waiter 输出 · ' : 'queue poll · ') + fmtAgo(w.pending_wakeup?.last_poll?.ago_s)"></div>
           </div>
           <!-- Live Codex review (exec child process or in-flight MCP call) -->
           <div x-show="w.codex_review" class="rounded px-1.5 py-1 border text-[11px]"
@@ -716,6 +722,13 @@ function fleet() {
       if (pw.overdue) return `${label} · 原定 ${hhmm}，已过期 ${Math.max(1, -mins)}m`;
       if (mins <= 0) return `${label} · 下次check ${hhmm}（即将唤醒）`;
       return `${label} · 下次check ${hhmm}（约 ${mins}m 后）`;
+    },
+
+    fmtAgo(s) {
+      if (s == null) return '';
+      if (s < 60) return `${s}s 前`;
+      if (s < 3600) return `${Math.floor(s / 60)}m 前`;
+      return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m 前`;
     },
 
     codexHeadline(cr) {

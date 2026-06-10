@@ -14,7 +14,7 @@ import pytest
 from core.patrol import classify
 from core.transcripts import extract_background_tasks, gpu_wait_from_background
 
-GPU_CMD = "until ssh pace 'sacct -j 9776397 -X -n -o State | grep -q COMPLETED'; do sleep 180; done"
+GPU_CMD = "until ssh -o ConnectTimeout=30 pace 'sacct -j 9776397,9777747 -X -n -o State | grep -q COMPLETED'; do sleep 180; done"
 GPU_DESC = "Wait for a100 clocktel jobs"
 
 
@@ -42,8 +42,8 @@ def _ack(tool_use_id: str, task_id: str, monitor: bool = False) -> dict:
     txt = (f"Monitor started (task {task_id}, persistent — runs until TaskStop or session end). "
            "You will be notified on each event."
            if monitor else
-           f"Command running in background with ID: {task_id}. Output is being written to: /tmp/x. "
-           "You will be notified when it completes.")
+           f"Command running in background with ID: {task_id}. Output is being written to: "
+           f"/tmp/tasks/{task_id}.output. You will be notified when it completes.")
     return {
         "type": "user",
         "message": {"role": "user", "content": [
@@ -94,6 +94,19 @@ def test_active_bg_waiter_detected(tmp_path):
     assert t["task_id"] == "btask1"
     assert t["is_gpu"] is True
     assert t["poll_interval_s"] == 180
+    # Queue-poll metadata parsed from the waiter command + spawn ack.
+    assert t["ssh_host"] == "pace"
+    assert t["job_ids"] == ["9776397", "9777747"]
+    assert t["output_file"] == "/tmp/tasks/btask1.output"
+
+
+@pytest.mark.unit
+def test_gpu_wait_carries_poll_metadata(tmp_path):
+    p = _write(tmp_path, [_bg_bash_use("toolu_a"), _ack("toolu_a", "btask1")])
+    pw = gpu_wait_from_background(extract_background_tasks(p))
+    assert pw["ssh_host"] == "pace"
+    assert pw["job_ids"] == ["9776397", "9777747"]
+    assert pw["output_file"] == "/tmp/tasks/btask1.output"
 
 
 @pytest.mark.unit

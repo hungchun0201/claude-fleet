@@ -558,6 +558,11 @@ _SLEEP_RE = re.compile(r"\bsleep\s+(\d+)")
 # A background task that runs a Codex review is not a GPU waiter, even if its
 # prompt text mentions GPUs (e.g. reviewing a GPU-memory article).
 _CODEX_TASK_RE = re.compile(r"\bcodex\s+(?:exec|mcp)\b|codex\s+review", re.IGNORECASE)
+# Pull the ssh target and Slurm job ids out of a waiter command so the
+# dashboard can poll the queue itself and show the latest job states.
+_SSH_HOST_RE = re.compile(r"\bssh\s+((?:-[A-Za-z]\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*)([A-Za-z0-9_.@-]+)")
+_JOB_IDS_RE = re.compile(r"-j\s*([0-9][0-9,]*)")
+_BG_OUTPUT_FILE_RE = re.compile(r"Output is being written to:\s*(\S+)")
 
 
 def _result_text(c: dict) -> str:
@@ -604,6 +609,8 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                     cmd = str(inp.get("command") or "")
                     desc = str(inp.get("description") or "")
                     sleep_m = _SLEEP_RE.search(cmd)
+                    host_m = _SSH_HOST_RE.search(cmd)
+                    ids_m = _JOB_IDS_RE.search(cmd)
                     haystack = cmd + " " + desc
                     bg_uses[tid] = {
                         "type": "bash_bg" if name == "Bash" else "monitor",
@@ -611,7 +618,10 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                         "command": cmd[:200],
                         "started_ts": d.get("timestamp") or "",
                         "task_id": None,
+                        "output_file": None,
                         "poll_interval_s": int(sleep_m.group(1)) if sleep_m else None,
+                        "ssh_host": host_m.group(2) if host_m else None,
+                        "job_ids": ids_m.group(1).split(",") if ids_m else [],
                         "is_gpu": bool(_GPU_WAIT_RE.search(haystack)) and not _CODEX_TASK_RE.search(haystack),
                     }
                 elif name == "TaskStop":
@@ -633,7 +643,11 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                     txt = _result_text(c)
                     id_m = _BG_TASK_ID_RE.search(txt)
                     if not c.get("is_error") and id_m and _BG_SPAWN_ACK_RE.search(txt):
-                        ack_by_use.setdefault(tu, id_m.group(1))
+                        out_m = _BG_OUTPUT_FILE_RE.search(txt)
+                        ack_by_use.setdefault(tu, {
+                            "task_id": id_m.group(1),
+                            "output_file": out_m.group(1).rstrip(".") if out_m else None,
+                        })
                     else:
                         plain_result_ids.add(tu)
             full_text = " ".join(text_parts)
@@ -650,7 +664,7 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                 notif_texts.append(blob)
 
     # ---- resolution ----
-    task_to_use = {tk: tu for tu, tk in ack_by_use.items() if tu in bg_uses}
+    task_to_use = {a["task_id"]: tu for tu, a in ack_by_use.items() if tu in bg_uses}
     resolved: set[str] = set()
     for ft in notif_texts:
         # Persistent Monitor "event" pulses recur without ending the task.
@@ -666,7 +680,9 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
 
     out: list[dict] = []
     for tu, task in bg_uses.items():
-        task["task_id"] = ack_by_use.get(tu)
+        ack = ack_by_use.get(tu) or {}
+        task["task_id"] = ack.get("task_id")
+        task["output_file"] = ack.get("output_file")
         if tu in resolved:
             continue
         if task["task_id"] and task["task_id"] in stopped_tasks:
@@ -697,6 +713,9 @@ def gpu_wait_from_background(tasks: list[dict]) -> Optional[dict]:
             "scheduled_at_ms": None,
             "wake_at_ms": None,
             "poll_interval_s": t.get("poll_interval_s"),
+            "ssh_host": t.get("ssh_host"),
+            "job_ids": t.get("job_ids") or [],
+            "output_file": t.get("output_file"),
             "overdue": False,
         }
     return None
