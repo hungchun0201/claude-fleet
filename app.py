@@ -137,7 +137,9 @@ app = FastAPI(title="Claude Fleet", lifespan=lifespan)
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     html = (STATIC_DIR / "index.html").read_text()
-    return HTMLResponse(html)
+    # Never let the browser cache the shell — a stale frontend renders new
+    # payload fields wrongly (and can't see the ui_version reload signal).
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/windows")
