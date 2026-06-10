@@ -8,6 +8,12 @@ The stalled flags themselves already embed their own silence thresholds
 (15 min rollout silence, 3 min missing rollout, overdue wakeups), so the
 debounce here only filters flapping — a push lands a couple of minutes
 into a confirmed hang instead of hours later when a human looks.
+
+The ntfy topic is resolved at SEND time (env var, else a config file
+outside the repo) and there is deliberately no baked-in default: an ntfy
+topic works like a weak password — anyone who knows the string can read
+your alert stream or spoof pushes to your phone — so it must never live
+in source. No topic configured = alerting silently disabled.
 """
 from __future__ import annotations
 
@@ -15,10 +21,25 @@ import os
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 STALL_ALERT_AFTER_S = 120
-NTFY_TOPIC = os.environ.get("CLAUDE_FLEET_NTFY_TOPIC", "your-ntfy-topic")
-NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
+NTFY_TOPIC_FILE = Path.home() / ".config" / "claude-fleet" / "ntfy-topic"
+
+
+def _topic() -> str:
+    """Env var wins; else first line of the config file; else "" (disabled).
+
+    Read per-push (cheap) so changing the file takes effect without
+    restarting the dashboard.
+    """
+    t = os.environ.get("CLAUDE_FLEET_NTFY_TOPIC", "").strip()
+    if t:
+        return t
+    try:
+        return NTFY_TOPIC_FILE.read_text().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return ""
 
 _stall_seen: dict[str, float] = {}   # key -> first tick seen stalled
 _alerted: set[str] = set()           # keys already pushed (one-shot)
@@ -70,12 +91,24 @@ def check(snapshot: dict, now: float | None = None) -> list[dict]:
     return due
 
 
+_warned_no_topic = False
+
+
 def push(alert: dict) -> bool:
     """Blocking ntfy POST; never raises (called fire-and-forget).
 
     Title/tags/priority go in the query string — header values must be
     latin-1 and ours contain CJK.
     """
+    global _warned_no_topic
+    topic = _topic()
+    if not topic:
+        if not _warned_no_topic:
+            print("[alerts] no ntfy topic configured "
+                  f"(set CLAUDE_FLEET_NTFY_TOPIC or {NTFY_TOPIC_FILE}); "
+                  "stall alerts disabled")
+            _warned_no_topic = True
+        return False
     qs = urllib.parse.urlencode({
         "title": alert.get("title", "Fleet alert"),
         "tags": alert.get("tags", "warning"),
@@ -83,7 +116,7 @@ def push(alert: dict) -> bool:
     })
     try:
         req = urllib.request.Request(
-            f"{NTFY_URL}?{qs}",
+            f"https://ntfy.sh/{urllib.parse.quote(topic, safe='')}?{qs}",
             data=alert.get("message", "").encode("utf-8"),
             method="POST",
         )

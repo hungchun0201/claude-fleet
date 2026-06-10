@@ -10,9 +10,11 @@ from core import alerts
 def _reset_state():
     alerts._stall_seen.clear()
     alerts._alerted.clear()
+    alerts._warned_no_topic = False
     yield
     alerts._stall_seen.clear()
     alerts._alerted.clear()
+    alerts._warned_no_topic = False
 
 
 def _snap(*windows):
@@ -79,3 +81,34 @@ def test_multiple_windows_each_alert():
     alerts.check(_snap(a, b), now=1000.0)
     due = alerts.check(_snap(a, b), now=1200.0)
     assert len(due) == 2
+
+
+# ---- topic resolution (no baked-in default — a topic is a weak password) ----
+
+@pytest.mark.unit
+def test_topic_env_var_wins(monkeypatch, tmp_path):
+    f = tmp_path / "ntfy-topic"
+    f.write_text("file-topic\n")
+    monkeypatch.setattr(alerts, "NTFY_TOPIC_FILE", f)
+    monkeypatch.setenv("CLAUDE_FLEET_NTFY_TOPIC", "env-topic")
+    assert alerts._topic() == "env-topic"
+
+
+@pytest.mark.unit
+def test_topic_file_fallback(monkeypatch, tmp_path):
+    f = tmp_path / "ntfy-topic"
+    f.write_text("  file-topic  \n# anything after line 1 is ignored\n")
+    monkeypatch.setattr(alerts, "NTFY_TOPIC_FILE", f)
+    monkeypatch.delenv("CLAUDE_FLEET_NTFY_TOPIC", raising=False)
+    assert alerts._topic() == "file-topic"
+
+
+@pytest.mark.unit
+def test_no_topic_disables_push_without_network(monkeypatch, tmp_path):
+    monkeypatch.setattr(alerts, "NTFY_TOPIC_FILE", tmp_path / "missing")
+    monkeypatch.delenv("CLAUDE_FLEET_NTFY_TOPIC", raising=False)
+    calls: list = []
+    monkeypatch.setattr(alerts.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(a))
+    assert alerts.push({"title": "t", "message": "m"}) is False
+    assert calls == []  # short-circuited before any HTTP

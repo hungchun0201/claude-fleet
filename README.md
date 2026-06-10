@@ -61,7 +61,9 @@ automatically. What it tracks:
   doesn't count.
 - **Codex reviews** — 🔍 badge for `codex exec` children and in-flight MCP
   calls, with stall detection (silent or missing rollout) and optional one-shot
-  [ntfy](https://ntfy.sh) push alerts (`CLAUDE_FLEET_NTFY_TOPIC`).
+  [ntfy](https://ntfy.sh) push alerts. Set `CLAUDE_FLEET_NTFY_TOPIC` or write
+  the topic to `~/.config/claude-fleet/ntfy-topic`; unset = alerts disabled
+  (topics act like passwords, so there is no default).
 
 ### Search
 

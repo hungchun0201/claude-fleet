@@ -56,7 +56,9 @@ notification，不对文字做关键字匹配，所以只是"聊到"后台任务
   光出现主机名不算。
 - **Codex 审查** —— 🔍 徽章覆盖 `codex exec` 子进程和进行中的 MCP 调用，
   带卡死检测（rollout 停滞或缺失），可选 [ntfy](https://ntfy.sh) 一次性推送
-  告警（`CLAUDE_FLEET_NTFY_TOPIC`）。
+  告警。设 `CLAUDE_FLEET_NTFY_TOPIC` 或把 topic 写进
+  `~/.config/claude-fleet/ntfy-topic`；不设则告警关闭（topic 相当于弱密码，
+  因此源码里没有默认值）。
 
 ### 搜索
 
