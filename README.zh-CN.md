@@ -35,13 +35,28 @@ cd claude-fleet && bash run.sh
 
 | 状态 | 含义 | 怎么判的 |
 |------|------|---------|
-| 🟢 working | 在干活 | busy 或有活跃 Monitor/Bash bg |
+| 🟢 working | 在干活 | busy，或有活跃后台工作（bg Bash / Monitor / Workflow / Codex 审查 / 等 GPU） |
 | 🔴 waiting | 等你批准 | permission prompt / dialog open |
-| 🟡 stalled | 卡住了 | stop_reason=tool_use + 空闲>5min |
+| 🟡 stalled | 卡住了 | stop_reason=tool_use + 空闲>5min，或 Codex 审查/Workflow 卡死、唤醒过期 |
 | 🔵 completed | 做完了 | stop_reason=end_turn + 空闲>5min |
 | ⚪ closeable | 可以关了 | completed + 空闲>1h |
 
-后台任务（Bash `run_in_background`、Monitor `persistent`）会追踪 tool_use/tool_result 配对，完成的自动清掉，不会误判成 working。
+判定全部走结构化信号——patrol 引擎配对 tool_use/tool_result 和 task
+notification，不对文字做关键字匹配，所以只是"聊到"后台任务的 session
+不会被误判成 working，跑完的任务也会自动清掉。具体追踪：
+
+- **后台任务** —— `Bash run_in_background` / `Monitor persistent` / `Workflow`，
+  覆盖完整 spawn-ack → task-notification 生命周期。主回合结束但任务还在跑时，
+  卡片保持 `working` 而不是 `completed`。
+- **Workflow 运行** —— ⚙️ 徽章 + 实时 agent 进度（done/started，读 run 的
+  journal）；15 分钟无输出标记疑似卡死。
+- **等 GPU（Slurm）** —— 睡在 ScheduleWakeup 或跑队列轮询 waiter 的 session
+  显示 ⏳ 徽章和下次唤醒时间；dashboard 自己轮询 `sacct`/`squeue`，把最新
+  job 状态贴在卡片上。需要真正的 Slurm/GPU 词（`squeue`、job id、H100/L40S…），
+  光出现主机名不算。
+- **Codex 审查** —— 🔍 徽章覆盖 `codex exec` 子进程和进行中的 MCP 调用，
+  带卡死检测（rollout 停滞或缺失），可选 [ntfy](https://ntfy.sh) 一次性推送
+  告警（`CLAUDE_FLEET_NTFY_TOPIC`）。
 
 ### 搜索
 

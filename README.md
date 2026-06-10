@@ -38,15 +38,30 @@ Not a simple busy/idle flag. The patrol engine reads each transcript's
 
 | Status | Meaning | How it's decided |
 |--------|---------|------------------|
-| 🟢 working | actively working | busy, or has a live Monitor/Bash background task |
+| 🟢 working | actively working | busy, or live background work (bg Bash / Monitor / Workflow / Codex review / GPU wait) |
 | 🔴 waiting | waiting on you | permission prompt / dialog open |
-| 🟡 stalled | stuck | stop_reason=tool_use + idle > 5 min |
+| 🟡 stalled | stuck | stop_reason=tool_use + idle > 5 min, or a hung Codex review / Workflow / overdue wakeup |
 | 🔵 completed | done | stop_reason=end_turn + idle > 5 min |
 | ⚪ closeable | safe to close | completed + idle > 1 h |
 
-Background tasks (`Bash run_in_background`, `Monitor persistent`) are tracked by
-pairing tool_use/tool_result; finished ones are cleared automatically, so they
-don't get misread as `working`.
+Classification is structural — the patrol engine pairs tool_use/tool_result and
+task notifications instead of keyword-matching prose, so a session that merely
+*talks about* background work doesn't read as working, and finished tasks clear
+automatically. What it tracks:
+
+- **Background tasks** — `Bash run_in_background` / `Monitor persistent` /
+  `Workflow` runs, through their full spawn-ack → task-notification lifecycle.
+  A turn that ends while they run stays `working`, not `completed`.
+- **Workflow runs** — ⚙️ badge with live agent progress (done/started, read from
+  the run's journal); flagged stalled after 15 min without output.
+- **GPU waits (Slurm)** — sessions sleeping on a ScheduleWakeup or running a
+  queue-poll waiter get a ⏳ badge with the next wake time; the dashboard polls
+  `sacct`/`squeue` itself and shows the latest job states on the card. Requires
+  real Slurm/GPU tokens (`squeue`, job ids, H100/L40S, …) — a mere hostname
+  doesn't count.
+- **Codex reviews** — 🔍 badge for `codex exec` children and in-flight MCP
+  calls, with stall detection (silent or missing rollout) and optional one-shot
+  [ntfy](https://ntfy.sh) push alerts (`CLAUDE_FLEET_NTFY_TOPIC`).
 
 ### Search
 
