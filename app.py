@@ -27,10 +27,14 @@ class State:
         self.subscribers: set[asyncio.Queue] = set()
 
     def diff_signature(self, snap: dict) -> tuple:
-        # Tuple of (pid, status, waiting_for, updated_at) lets us tell whether
-        # anything dashboard-visible has changed.
+        # Tuple of (pid, status, waiting_for, updated_at, wake_at, overdue)
+        # lets us tell whether anything dashboard-visible has changed. overdue
+        # matters: it flips server-side with no other field changing, and it
+        # drives the working→stalled triage transition.
         return tuple(
-            (w["pid"], w["status"], w["waiting_for"], w["updated_at"])
+            (w["pid"], w["status"], w["waiting_for"], w["updated_at"],
+             (w.get("pending_wakeup") or {}).get("wake_at_ms"),
+             (w.get("pending_wakeup") or {}).get("overdue"))
             for w in snap["windows"]
         )
 
@@ -58,8 +62,10 @@ def _enriched_snapshot() -> dict:
                 w["first_input"] = first[:100]
         if tp:
             w["current_task"] = transcripts.current_task_hint(tp)
+            w["pending_wakeup"] = transcripts.extract_pending_wakeup(tp)
         else:
             w["current_task"] = None
+            w["pending_wakeup"] = None
         tri = patrol.classify(w)
         w["triage"] = tri["triage"]
         w["triage_reason"] = tri["reason"]

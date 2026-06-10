@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
-from collections import deque
+import re
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -34,10 +36,41 @@ def _iter_lines(path: Path) -> Iterable[dict]:
 
 
 def _tail_lines(path: Path, n: int) -> list[dict]:
-    buf: deque[dict] = deque(maxlen=n)
-    for d in _iter_lines(path):
-        buf.append(d)
-    return list(buf)
+    """Last n parsed jsonl rows, reading only the file tail.
+
+    Seeks backwards from EOF in growing blocks instead of streaming the whole
+    file — transcripts grow to tens of MB and this runs in the 2s poll loop.
+    """
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            block = 64 * 1024
+            buf = b""
+            # +2: margin for a partial first line and a trailing newline.
+            while pos > 0 and buf.count(b"\n") < n + 2:
+                step = min(block, pos)
+                pos -= step
+                f.seek(pos)
+                buf = f.read(step) + buf
+                block *= 2
+    except OSError:
+        return []
+    parts = buf.split(b"\n")
+    if pos > 0:
+        parts = parts[1:]  # first part may be a partial line
+    out: list[dict] = []
+    for raw in parts:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(d, dict):
+            out.append(d)
+    return out[-n:]
 
 
 def _flatten_assistant(msg: dict) -> list[TurnEvent]:
@@ -331,6 +364,117 @@ def extract_memory_ops(path: str | Path) -> list[dict]:
                     entry["content_preview"] = f"-{old}\n+{new}" if old else new[:200]
                 ops.append(entry)
     return ops
+
+
+# Heuristic: does a ScheduleWakeup reason/prompt describe waiting on GPU jobs
+# (PACE / Slurm / specific GPU SKUs)? Used to tag the card "等 GPU".
+_GPU_WAIT_RE = re.compile(
+    r"\b(pace|gpu|slurm|squeue|sbatch|salloc|scancel|h100|h200|l40s?|a100|v100|cuda|vllm)\b"
+    r"|rtx\s*\d{3,4}"
+    r"|job\s*#?\d{5,}"
+    r"|等\s*gpu",
+    re.IGNORECASE,
+)
+
+# A wakeup this far past its scheduled time with no new activity means the
+# harness never fired it — surface as stalled instead of working.
+_WAKEUP_OVERDUE_GRACE_MS = 300_000
+
+# ScheduleWakeup's runtime clamps delaySeconds to this range; mirror it so the
+# predicted wake time matches what will actually happen.
+_WAKEUP_MIN_DELAY_S = 60
+_WAKEUP_MAX_DELAY_S = 3600
+
+
+def _parse_ts_ms(ts: str) -> Optional[int]:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _wakeup_info(block: dict, ts: str) -> Optional[dict]:
+    inp = block.get("input") or {}
+    try:
+        delay = int(float(inp.get("delaySeconds", 0)))
+    except (TypeError, ValueError):
+        return None
+    scheduled_ms = _parse_ts_ms(ts)
+    if scheduled_ms is None or delay <= 0:
+        return None
+    delay = max(_WAKEUP_MIN_DELAY_S, min(_WAKEUP_MAX_DELAY_S, delay))
+    reason = str(inp.get("reason") or "")
+    prompt = str(inp.get("prompt") or "")
+    wake_ms = scheduled_ms + delay * 1000
+    now_ms = int(time.time() * 1000)
+    is_gpu = bool(_GPU_WAIT_RE.search(reason + " " + prompt))
+    return {
+        "kind": "gpu" if is_gpu else "generic",
+        "reason": reason[:300],
+        "prompt": prompt[:300],
+        "delay_seconds": delay,
+        "scheduled_at_ms": scheduled_ms,
+        "wake_at_ms": wake_ms,
+        "overdue": now_ms > wake_ms + _WAKEUP_OVERDUE_GRACE_MS,
+    }
+
+
+def extract_pending_wakeup(path: str | Path) -> Optional[dict]:
+    """Detect a ScheduleWakeup call that is still pending (session is sleeping).
+
+    Walks the transcript tail backwards. The wakeup is pending iff the most
+    recent assistant action is a ScheduleWakeup tool call and no real user
+    input arrived after it (tool_result envelopes don't count — when the
+    wakeup fires, the harness injects a user message, which clears this).
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    for d in reversed(_tail_lines(p, 80)):
+        t = d.get("type")
+        if t == "assistant":
+            content = (d.get("message") or {}).get("content") or []
+            if not isinstance(content, list):
+                return None
+            wakeup = None
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "ScheduleWakeup":
+                    wakeup = c
+            if wakeup is not None:
+                return _wakeup_info(wakeup, d.get("timestamp") or "")
+            # Thinking-only rows carry no action — keep walking. Any other
+            # tool call or real text means the session moved past the wakeup.
+            has_action = any(
+                isinstance(c, dict) and (
+                    c.get("type") == "tool_use"
+                    or (c.get("type") == "text" and (c.get("text") or "").strip())
+                )
+                for c in content
+            )
+            if has_action:
+                return None
+        elif t == "user":
+            content = (d.get("message") or {}).get("content") or []
+            if isinstance(content, str):
+                if content.strip():
+                    return None
+            elif isinstance(content, list):
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("type") == "text" and (c.get("text") or "").strip():
+                        return None
+                    # An errored tool_result means the wakeup call itself
+                    # failed — the session is not actually sleeping.
+                    if c.get("type") == "tool_result" and c.get("is_error"):
+                        return None
+        # system / summary / queue-operation rows: keep walking.
+    return None
 
 
 def extract_background_tasks(path: str | Path) -> list[dict]:

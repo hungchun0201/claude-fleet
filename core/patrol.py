@@ -111,6 +111,25 @@ def classify(window_dict: dict) -> dict:
             "suggestion": "去终端批准",
         }
 
+    # Session is sleeping on a ScheduleWakeup (e.g. polling a PACE GPU job).
+    # Without this it would read as generic "working" / "stalled 停在 ScheduleWakeup".
+    pw = window_dict.get("pending_wakeup")
+    if pw:
+        wake_hhmm = time.strftime("%H:%M", time.localtime(pw["wake_at_ms"] / 1000))
+        label = "等 GPU" if pw.get("kind") == "gpu" else "等待定时唤醒"
+        why = (pw.get("reason") or "").split("\n")[0][:80]
+        if pw.get("overdue"):
+            return {
+                "triage": "stalled",
+                "reason": f"{label}，唤醒已过期（原定 {wake_hhmm}）。{why}",
+                "suggestion": "检查会话是否卡住",
+            }
+        return {
+            "triage": "working",
+            "reason": f"{label} · 下次唤醒 {wake_hhmm}。{why}",
+            "suggestion": "",
+        }
+
     if status == "busy" and idle < IDLE_THRESHOLD:
         return {
             "triage": "working",

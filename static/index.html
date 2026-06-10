@@ -256,12 +256,23 @@
             <span class="font-semibold text-sm truncate" x-text="w.name || w.first_input || w.project_name"></span>
             <span class="text-[10px] px-1.5 rounded-full text-white shrink-0" :class="'triage-' + w.triage"
                   x-text="w.triage"></span>
+            <span class="text-[10px] px-1.5 rounded-full shrink-0"
+                  x-show="w.pending_wakeup"
+                  :class="w.pending_wakeup?.overdue ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'"
+                  x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ 等GPU' : '⏳ 定时唤醒'"></span>
           </div>
           <div class="text-xs text-gray-500 truncate" x-text="w.cwd"></div>
         </div>
         <div class="px-4 pb-2 text-xs space-y-1">
           <div class="text-gray-600 truncate" x-show="w.current_task" x-text="w.current_task"></div>
           <div class="text-gray-500 italic" x-text="w.triage_reason"></div>
+          <!-- Pending wakeup (e.g. sleeping until the next PACE GPU check) -->
+          <div x-show="w.pending_wakeup" class="rounded px-1.5 py-1 border text-[11px]"
+               :class="w.pending_wakeup?.overdue ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-indigo-50 border-indigo-100 text-indigo-700'"
+               :title="w.pending_wakeup?.reason">
+            <div class="font-medium" x-text="wakeupHeadline(w.pending_wakeup)"></div>
+            <div class="truncate opacity-80" x-show="w.pending_wakeup?.reason" x-text="w.pending_wakeup?.reason"></div>
+          </div>
           <!-- Review verdict -->
           <div x-show="reviewVerdicts[w.pid]"
                class="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 max-h-32 overflow-y-auto whitespace-pre-wrap"
@@ -609,6 +620,7 @@ function fleet() {
     skillSessions: {},
     expandedMemory: null,
     memorySessions: {},
+    nowTick: Date.now(),
 
     get waitingWindows() {
       return this.windows.filter(w => w.triage === 'waiting_perm');
@@ -640,6 +652,8 @@ function fleet() {
       }
       this._applyHashRoute();
       window.addEventListener('hashchange', () => this._applyHashRoute());
+      // Keep wakeup countdowns ("约 Xm 后") fresh between SSE snapshots.
+      setInterval(() => { this.nowTick = Date.now(); }, 30000);
     },
 
     // Deep-link panels via URL hash: #skills, #memory, #search=<q>, #timeline=<sid>
@@ -661,6 +675,16 @@ function fleet() {
       if (seconds < 60) return seconds + 's ago';
       if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
       return Math.floor(seconds / 3600) + 'h ago';
+    },
+
+    wakeupHeadline(pw) {
+      if (!pw) return '';
+      const label = pw.kind === 'gpu' ? '⏳ 等 GPU' : '⏳ 定时唤醒';
+      const hhmm = new Date(pw.wake_at_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const mins = Math.round((pw.wake_at_ms - this.nowTick) / 60000);
+      if (pw.overdue) return `${label} · 原定 ${hhmm}，已过期 ${Math.max(1, -mins)}m`;
+      if (mins <= 0) return `${label} · 下次check ${hhmm}（即将唤醒）`;
+      return `${label} · 下次check ${hhmm}（约 ${mins}m 后）`;
     },
 
     async focusWindow(pid) {
