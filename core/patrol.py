@@ -115,10 +115,14 @@ def classify(window_dict: dict) -> dict:
     if cr:
         elapsed = _format_idle(cr.get("elapsed_s") or 0)
         if cr.get("stalled"):
-            silent = _format_idle(cr.get("silent_s") or 0)
+            if cr.get("stall_reason") == "no_rollout":
+                reason = f"Codex 审查疑似卡死：进程已 {elapsed} 却从未写入 rollout（典型 stdin 挂起）"
+            else:
+                silent = _format_idle(cr.get("silent_s") or 0)
+                reason = f"Codex 审查疑似卡死：已 {elapsed}，输出停滞 {silent}"
             return {
                 "triage": "stalled",
-                "reason": f"Codex 审查疑似卡死：已 {elapsed}，输出停滞 {silent}",
+                "reason": reason,
                 "suggestion": "查看 Codex 进度，考虑重启该审查",
             }
         act = (cr.get("current_action") or "")[:70]
