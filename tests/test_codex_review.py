@@ -103,13 +103,29 @@ def test_exec_streaming_not_stalled():
 @pytest.mark.unit
 def test_mcp_review_matched_by_cwd_and_time():
     marker = NOW_MS - 5400 * 1000
-    rolls = [_rollout(5390, originator="codex_cli_rs", sid="mcp-sid")]
+    # Rollout still streaming (wrote 10s ago) -> healthy.
+    rolls = [_rollout(5390, originator="codex_cli_rs", sid="mcp-sid",
+                      last_write_offset_s=10)]
     cr = detect_codex_review(_window(), {}, rolls, marker)
     assert cr is not None
     assert cr["source"] == "mcp"
     assert cr["codex_session_id"] == "mcp-sid"
+    assert cr["streaming"] is True
     assert cr["stalled"] is False
     assert 5380 <= cr["elapsed_s"] <= 5400
+
+
+@pytest.mark.unit
+def test_mcp_rollout_silence_flags_stalled():
+    # 2026-06-10 Stall B/C signature: MCP rollouts DO stream in codex 0.137,
+    # so a rollout frozen for 20 min during an in-flight call is a hang.
+    marker = NOW_MS - 5400 * 1000
+    rolls = [_rollout(5390, originator="codex_cli_rs", sid="mcp-sid",
+                      last_write_offset_s=20 * 60)]
+    cr = detect_codex_review(_window(), {}, rolls, marker)
+    assert cr["source"] == "mcp"
+    assert cr["stalled"] is True
+    assert cr["stall_reason"] == "silent"
 
 
 @pytest.mark.unit
@@ -119,6 +135,58 @@ def test_mcp_marker_without_rollout_still_reported():
     assert cr is not None
     assert cr["source"] == "mcp"
     assert cr["codex_session_id"] is None
+    # Unmatched rollout is a matching failure, not a hang signal.
+    assert cr["stalled"] is False
+
+
+@pytest.mark.unit
+def test_exec_without_rollout_flags_stalled_after_grace():
+    # 2026-06-10 Stall A signature: codex exec hung reading stdin BEFORE it
+    # ever created a rollout — process alive for hours, no session files.
+    exec_map = {100: {"elapsed_s": 6 * 3600, "pid": 200, "command": "codex exec"}}
+    cr = detect_codex_review(_window(), exec_map, [], None)
+    assert cr["source"] == "exec"
+    assert cr["stalled"] is True
+    assert cr["stall_reason"] == "no_rollout"
+    assert cr["silent_s"] is None
+
+
+@pytest.mark.unit
+def test_exec_without_rollout_healthy_during_startup_grace():
+    exec_map = {100: {"elapsed_s": 30, "pid": 200, "command": "codex exec"}}
+    cr = detect_codex_review(_window(), exec_map, [], None)
+    assert cr["stalled"] is False
+    assert cr["stall_reason"] is None
+
+
+@pytest.mark.unit
+def test_stalled_mcp_wins_over_healthy_exec():
+    # The 2026-06-10 double stall: a zombie exec child must not mask a
+    # concurrently hung MCP call on the same window.
+    exec_map = {100: {"elapsed_s": 60, "pid": 200, "command": "codex exec"}}
+    marker = NOW_MS - 5400 * 1000
+    rolls = [
+        _rollout(55, sid="exec-roll", last_write_offset_s=5),
+        _rollout(5390, originator="codex_cli_rs", sid="mcp-sid",
+                 last_write_offset_s=20 * 60),
+    ]
+    cr = detect_codex_review(_window(), exec_map, rolls, marker)
+    assert cr["source"] == "mcp"
+    assert cr["stalled"] is True
+
+
+@pytest.mark.unit
+def test_stalled_exec_wins_over_healthy_mcp():
+    exec_map = {100: {"elapsed_s": 7200, "pid": 200, "command": "codex exec"}}
+    marker = NOW_MS - 300 * 1000
+    rolls = [
+        _rollout(7100, sid="exec-roll", last_write_offset_s=3600),
+        _rollout(290, originator="codex_cli_rs", sid="mcp-sid",
+                 last_write_offset_s=5),
+    ]
+    cr = detect_codex_review(_window(), exec_map, rolls, marker)
+    assert cr["source"] == "exec"
+    assert cr["stalled"] is True
 
 
 @pytest.mark.unit

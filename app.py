@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, codex, history, memory, patrol, perms, plans, search, sessions, skills, transcripts
+from core import actions, alerts, codex, history, memory, patrol, perms, plans, search, sessions, skills, transcripts
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -173,10 +173,11 @@ def _enriched_snapshot() -> dict:
             w["background_tasks"] = []
             w["workflow_run"] = None
             w["pending_wakeup"] = None
-        # In-flight MCP codex calls leave no transcript row; only look for
-        # the marker on busy windows without an exec-style codex child.
+        # In-flight MCP codex calls leave no transcript row; look for the
+        # marker on every busy window — a lingering (possibly hung) exec
+        # child must not mask a concurrent hung MCP call on the same window.
         marker = None
-        if tp and w["status"] == "busy" and w["pid"] not in exec_reviews:
+        if tp and w["status"] == "busy":
             marker = transcripts.codex_call_marker(tp)
         w["codex_review"] = codex.detect_codex_review(w, exec_reviews, rollouts, marker)
         tri = patrol.classify(w)
@@ -208,6 +209,8 @@ async def _watcher() -> None:
         try:
             snap = _enriched_snapshot()
             state.last_snapshot = snap
+            for alert in alerts.check(snap):
+                asyncio.create_task(asyncio.to_thread(alerts.push, alert))
             payload = json.dumps(snap)
             dead: list[asyncio.Queue] = []
             for q in list(state.subscribers):

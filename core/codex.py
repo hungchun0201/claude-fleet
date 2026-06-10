@@ -244,12 +244,25 @@ def list_codex_sessions() -> list[CodexSession]:
 #         tee). Detectable from the process tree; its rollout file STREAMS,
 #         so we can show current activity and flag a stalled review.
 #   mcp:  a Claude session calls the mcp__codex__codex tool. The in-flight
-#         tool_use is not in the Claude transcript yet; the rollout is
-#         written only at start (session_meta + task_started), so there is
-#         no live progress — only the start time.
+#         tool_use is not in the Claude transcript yet, but the rollout
+#         STREAMS too (codex >= 0.137 writes every response item), so mtime
+#         silence is a valid stall signal for both shapes.
+#
+# Three observed hang modes (2026-06-10 forensics):
+#   A: codex exec blocks reading a never-closing stdin pipe before it ever
+#      creates a rollout — process alive for hours, NO matching rollout.
+#   B: the codex agent recursively calls its own mcp__codex tool and
+#      deadlocks at the approval gate — rollout streams, then freezes.
+#   C: the MCP turn starts but never streams an item — rollout contains
+#      only session_meta + task_started, mtime frozen from the start.
 
 _EXEC_CMD_RE = re.compile(r"(?:^|[/\s])codex\s+exec\s")
 EXEC_STALL_THRESHOLD_S = 15 * 60
+# A healthy `codex exec` writes session_meta within seconds; minutes of
+# process lifetime with zero matching rollout means it never started a
+# session (the Mode-A stdin-hang signature).
+EXEC_NO_ROLLOUT_STALL_S = 180
+MCP_STALL_THRESHOLD_S = 15 * 60
 
 
 def _parse_etime(s: str) -> int:
@@ -417,11 +430,18 @@ def _cwd_related(a: str, b: str) -> bool:
 
 def detect_codex_review(window: dict, exec_map: dict[int, dict],
                         rollouts: list[dict], marker_ts_ms: Optional[int]) -> Optional[dict]:
-    """Build the codex_review record for one window, or None."""
+    """Build the codex_review record for one window, or None.
+
+    Evaluates BOTH shapes and returns the stalled one preferentially: a
+    lingering hung exec child (Mode A zombie) must not mask a concurrent
+    hung MCP call on the same window — both were live at once in the
+    2026-06-10 double stall.
+    """
     now_ms = int(time.time() * 1000)
     pid = window.get("pid")
     cwd = window.get("cwd", "")
 
+    exec_rec = None
     ex = exec_map.get(pid)
     if ex:
         started_ms = now_ms - ex["elapsed_s"] * 1000
@@ -437,35 +457,64 @@ def detect_codex_review(window: dict, exec_map: dict[int, dict],
             and r["started_at_ms"] and r["started_at_ms"] >= started_ms - 30_000
         ]
         roll = min(candidates, key=lambda r: r["started_at_ms"], default=None)
-        silent_s = (now_ms - roll["last_write_ms"]) // 1000 if roll else None
-        return {
+        if roll:
+            silent_s = (now_ms - roll["last_write_ms"]) // 1000
+            stalled = silent_s > EXEC_STALL_THRESHOLD_S
+            stall_reason = "silent" if stalled else None
+        else:
+            # No rollout is NOT healthy: past the startup grace it is the
+            # Mode-A signature (codex exec hung on stdin before ever
+            # starting a session).
+            silent_s = None
+            stalled = ex["elapsed_s"] > EXEC_NO_ROLLOUT_STALL_S
+            stall_reason = "no_rollout" if stalled else None
+        exec_rec = {
             "source": "exec",
             "elapsed_s": ex["elapsed_s"],
             "codex_session_id": roll["codex_session_id"] if roll else None,
             "streaming": roll is not None,
             "silent_s": silent_s,
-            "stalled": silent_s is not None and silent_s > EXEC_STALL_THRESHOLD_S,
+            "stalled": stalled,
+            "stall_reason": stall_reason,
             "current_action": rollout_current_action(roll["path"]) if roll else None,
         }
 
+    mcp_rec = None
     if marker_ts_ms is not None:
         roll = next(
             (r for r in rollouts
-             if r["originator"] != "codex_exec" and r["cwd"] == cwd
+             if r["originator"] != "codex_exec" and _cwd_related(r["cwd"], cwd)
              and r["started_at_ms"] and r["started_at_ms"] >= marker_ts_ms - 120_000),
             None,
         )
         started_ms = (roll["started_at_ms"] if roll else marker_ts_ms)
-        return {
+        if roll:
+            # MCP rollouts stream in codex >= 0.137 — mtime silence catches
+            # both Mode B (streams then freezes) and Mode C (frozen from
+            # the start). An unmatched rollout stays un-flagged: matching
+            # can fail for benign reasons (cwd attribution), and every
+            # observed MCP hang mode does create a rollout.
+            silent_s = (now_ms - roll["last_write_ms"]) // 1000
+            stalled = silent_s > MCP_STALL_THRESHOLD_S
+        else:
+            silent_s = None
+            stalled = False
+        mcp_rec = {
             "source": "mcp",
             "elapsed_s": max(0, (now_ms - started_ms) // 1000),
             "codex_session_id": roll["codex_session_id"] if roll else None,
-            "streaming": False,
-            "silent_s": None,
-            "stalled": False,
-            "current_action": None,
+            "streaming": roll is not None,
+            "silent_s": silent_s,
+            "stalled": stalled,
+            "stall_reason": "silent" if stalled else None,
+            "current_action": rollout_current_action(roll["path"]) if roll else None,
         }
-    return None
+
+    if exec_rec and mcp_rec:
+        if mcp_rec["stalled"] and not exec_rec["stalled"]:
+            return mcp_rec
+        return exec_rec
+    return exec_rec or mcp_rec
 
 
 def codex_timeline(path: str | Path, limit: int = 60) -> list[dict]:
