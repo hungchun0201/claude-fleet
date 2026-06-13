@@ -291,10 +291,10 @@
                   x-show="w.status === 'shell'"
                   title="對話回合已結束，但仍有背景 shell 在執行（可能是忘了關的 server 或殘留的 &）。可到終端機按 ↓ 管理或關閉。">🐚 shell</span>
           </div>
-          <div class="text-xs text-gray-500 truncate" x-text="w.cwd"></div>
+          <div class="text-xs text-gray-500 truncate" x-text="prettyPath(w.cwd)" :title="prettyPath(w.cwd)"></div>
         </div>
         <div class="px-4 pb-2 text-xs space-y-1">
-          <div class="text-gray-600 truncate" x-show="w.current_task" x-text="w.current_task"></div>
+          <div class="text-gray-600 truncate" x-show="w.current_task" x-text="prettyPath(w.current_task)"></div>
           <div class="text-gray-500 italic" x-text="w.triage_reason"></div>
           <!-- Pending wakeup (e.g. sleeping until the next PACE GPU check) -->
           <div x-show="w.pending_wakeup" class="rounded px-1.5 py-1 border text-[11px]"
@@ -341,7 +341,7 @@
                    :title="'pid ' + sh.pid">
                 🐚 <span x-show="sh.elapsed" class="opacity-60" x-text="sh.elapsed + ' · '"></span>
                 <span class="font-mono break-all whitespace-pre-wrap"
-                      x-text="sh.doing || '閒置 shell（無執行中的子程序，可關閉）'"></span>
+                      x-text="sh.doing ? prettyPath(sh.doing) : '閒置 shell（無執行中的子程序，可關閉）'"></span>
               </div>
             </template>
           </div>
@@ -757,6 +757,13 @@ function fleet() {
       this.counts = snap.counts || this.counts;
       this.usageSummary = snap.usage_summary || null;
       if (snap.plan_usage !== undefined) this.planUsage = snap.plan_usage;
+    },
+
+    // Abbreviate home paths so the username never shows in the UI / screenshots:
+    // /Users/alice/PhD → ~/PhD, /home/bob/x → ~/x. Display-only.
+    prettyPath(s) {
+      if (s == null) return s;
+      return String(s).replace(/\/(?:Users|home)\/[^/\s]+\//g, '~/');
     },
 
     // Usage % → green / amber / red (shared by real bars and the estimate).
