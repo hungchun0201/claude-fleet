@@ -201,6 +201,43 @@ def current_task_hint(path: str | Path) -> Optional[str]:
     return None
 
 
+def last_usage_and_model(path: str | Path) -> Optional[dict]:
+    """Latest model + token usage for a session card.
+
+    Reads only the transcript tail. Returns the most recent *real* assistant
+    turn's model and a token breakdown:
+      - context_tokens: input + cache_read + cache_creation of that turn — how
+        full the context window currently is ("目前使用的 token 數量").
+      - out_tokens: output tokens of that turn.
+    Synthetic rows (model "<synthetic>", e.g. API-error notices) carry no real
+    model or usage and are skipped.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    for d in reversed(_tail_lines(p, 60)):
+        if d.get("type") != "assistant":
+            continue
+        msg = d.get("message") or {}
+        if not isinstance(msg, dict):
+            continue
+        model = msg.get("model") or ""
+        usage = msg.get("usage")
+        if not model or model == "<synthetic>" or not isinstance(usage, dict):
+            continue
+        ctx = (
+            int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_read_input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0)
+        )
+        return {
+            "model": model,
+            "context_tokens": ctx,
+            "out_tokens": int(usage.get("output_tokens") or 0),
+        }
+    return None
+
+
 def extract_skills_used(path: str | Path) -> list[str]:
     """Extract unique skill names invoked via the Skill tool."""
     counts = count_skill_invocations(path)

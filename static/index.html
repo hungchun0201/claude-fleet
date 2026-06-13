@@ -40,7 +40,7 @@
 </div>
 
 <!-- ===== Header ===== -->
-<header class="px-6 py-3 border-b bg-white flex items-center justify-between">
+<header class="px-6 pt-3 pb-5 border-b bg-white flex items-center justify-between">
   <div class="flex items-center gap-3">
     <h1 class="text-xl font-bold tracking-tight">Claude Fleet</h1>
     <div class="flex gap-1 text-xs">
@@ -56,6 +56,22 @@
             :class="statusFilter==='completed' || statusFilter==='closeable' ? 'ring-2 ring-gray-400' : ''"
             @click="statusFilter = (statusFilter==='completed' ? 'closeable' : statusFilter==='closeable' ? '' : 'completed')"
             x-text="counts.idle + ' idle'"></span>
+    </div>
+    <!-- Plan usage (mirrors Settings → Usage). 5h current session shows used
+         tokens (local estimate) + the real % from the account; week shows the
+         real all-models %. Token magnitude falls back to an estimate-only badge
+         when the live endpoint is unavailable. -->
+    <!-- Badges stay on one aligned row; the 5h reset hangs below via absolute
+         positioning so it never nudges the badge row out of alignment. -->
+    <div class="relative flex items-center gap-1.5 text-xs">
+      <span class="px-2 py-0.5 rounded-full font-medium" x-show="usageSummary || planUsage"
+            :class="pctColor(fiveHourPct)" :title="fiveHourTitle"
+            x-text="'5h ' + fiveHourLabel"></span>
+      <span class="px-2 py-0.5 rounded-full font-medium" x-show="planUsage?.seven_day"
+            :class="pctColor(planUsage?.seven_day?.pct)" :title="'week · all models' + resetHint(planUsage?.seven_day)"
+            x-text="'week ' + planUsage?.seven_day?.pct + '%'"></span>
+      <div class="absolute left-1.5 top-full mt-px text-[10px] text-gray-400 whitespace-nowrap pointer-events-none"
+           x-show="fiveHourReset" x-text="fiveHourReset"></div>
     </div>
     <!-- Skills / Memory buttons -->
     <button @click="showSkills = !showSkills; if(showSkills) loadSkills()"
@@ -268,6 +284,12 @@
                   x-show="w.workflow_run"
                   :class="w.workflow_run?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'"
                   x-text="w.workflow_run?.stalled ? '⚙️ Workflow 卡住?' : '⚙️ Workflow'"></span>
+            <!-- Lingering background shell: the turn is over but a shell stays
+                 alive (forgotten server / bare `&`). Shown even when the card
+                 reads "completed", so a dead shell never hides as "working". -->
+            <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-orange-100 text-orange-700"
+                  x-show="w.status === 'shell'"
+                  title="對話回合已結束，但仍有背景 shell 在執行（可能是忘了關的 server 或殘留的 &）。可到終端機按 ↓ 管理或關閉。">🐚 shell</span>
           </div>
           <div class="text-xs text-gray-500 truncate" x-text="w.cwd"></div>
         </div>
@@ -310,6 +332,19 @@
           <div x-show="reviewVerdicts[w.pid]"
                class="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 max-h-32 overflow-y-auto whitespace-pre-wrap"
                x-text="reviewVerdicts[w.pid]"></div>
+          <!-- Lingering background shell: what is it actually running? Shown in
+               full (wraps, monospace) so the command is actually legible. -->
+          <div x-show="w.shells?.length" class="space-y-0.5">
+            <template x-for="(sh, i) in (w.shells||[])" :key="sh.pid">
+              <div class="text-[10px] rounded px-1.5 py-0.5"
+                   :class="sh.doing ? 'text-orange-700 bg-orange-50' : 'text-gray-500 bg-gray-50'"
+                   :title="'pid ' + sh.pid">
+                🐚 <span x-show="sh.elapsed" class="opacity-60" x-text="sh.elapsed + ' · '"></span>
+                <span class="font-mono break-all whitespace-pre-wrap"
+                      x-text="sh.doing || '閒置 shell（無執行中的子程序，可關閉）'"></span>
+              </div>
+            </template>
+          </div>
           <!-- Background tasks -->
           <div x-show="w.background_tasks?.length" class="space-y-0.5">
             <template x-for="(bt, i) in (w.background_tasks||[])" :key="i">
@@ -330,9 +365,18 @@
                     x-text="(m.operation === 'read' ? '↓' : '↑') + m.name"></span>
             </template>
           </div>
-          <div class="text-gray-400">
-            <span x-text="formatIdle(w.idle_seconds)"></span> ·
-            pid <span x-text="w.pid"></span>
+          <div class="text-gray-400 flex items-center gap-2 flex-wrap">
+            <span>
+              <span x-text="formatIdle(w.idle_seconds)"></span> ·
+              pid <span x-text="w.pid"></span>
+            </span>
+            <!-- Current model + context-window fill for this session. -->
+            <span class="inline-flex items-center gap-1" x-show="w.usage">
+              <span class="rounded px-1.5 font-medium" :class="modelColor(w.usage?.model)"
+                    x-text="modelShort(w.usage?.model)"></span>
+              <span class="text-gray-500" :title="(w.usage?.context_tokens || 0).toLocaleString() + ' tokens 目前在 context window'"
+                    x-text="fmtTok(w.usage?.context_tokens) + ' ctx'"></span>
+            </span>
           </div>
         </div>
         <div class="px-4 pb-3 pt-1 flex gap-2 flex-wrap" @click.stop>
@@ -626,6 +670,8 @@ function fleet() {
   return {
     windows: [],
     counts: { total: 0, busy: 0, waiting: 0, idle: 0 },
+    usageSummary: null,
+    planUsage: null,
     statusFilter: '',
     searchQuery: '',
     searchResults: null,
@@ -709,6 +755,95 @@ function fleet() {
       }
       this.windows = snap.windows || [];
       this.counts = snap.counts || this.counts;
+      this.usageSummary = snap.usage_summary || null;
+      if (snap.plan_usage !== undefined) this.planUsage = snap.plan_usage;
+    },
+
+    // Usage % → green / amber / red (shared by real bars and the estimate).
+    pctColor(p) {
+      if (p == null) return 'bg-violet-100 text-violet-800';
+      if (p >= 90) return 'bg-red-100 text-red-700';
+      if (p >= 70) return 'bg-amber-100 text-amber-700';
+      return 'bg-emerald-100 text-emerald-800';
+    },
+
+    // " · 重置 6/14 23:00" from a window's resets_at, or '' if absent.
+    resetHint(win) {
+      if (!win || !win.resets_at) return '';
+      const d = new Date(win.resets_at);
+      if (isNaN(d.getTime())) return '';
+      return ' · 重置 ' + d.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    },
+
+    // Compact token count: 1.2M / 340k / 780.
+    fmtTok(n) {
+      n = n || 0;
+      if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+      if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+      return String(n);
+    },
+
+    // Human-friendly model label from the raw id.
+    modelShort(id) {
+      if (!id) return '';
+      if (id.startsWith('claude-fable-5')) return 'Fable 5';
+      if (id.startsWith('claude-opus-4-8')) return 'Opus 4.8';
+      if (id.startsWith('claude-opus')) return 'Opus';
+      if (id.startsWith('claude-sonnet-4-6')) return 'Sonnet 4.6';
+      if (id.startsWith('claude-sonnet')) return 'Sonnet';
+      if (id.startsWith('claude-haiku-4-5')) return 'Haiku 4.5';
+      if (id.startsWith('claude-haiku')) return 'Haiku';
+      return id.replace(/^claude-/, '');
+    },
+
+    // Tier-based chip colour so models are distinguishable at a glance.
+    modelColor(id) {
+      if (!id) return 'bg-gray-100 text-gray-600';
+      if (id.includes('fable')) return 'bg-slate-200 text-slate-700';
+      if (id.includes('opus')) return 'bg-violet-100 text-violet-700';
+      if (id.includes('sonnet')) return 'bg-blue-100 text-blue-700';
+      if (id.includes('haiku')) return 'bg-teal-100 text-teal-700';
+      return 'bg-gray-100 text-gray-600';
+    },
+
+    // 5h badge colour: real session % if we have it, else the local estimate %.
+    get fiveHourPct() {
+      const real = this.planUsage && this.planUsage.five_hour && this.planUsage.five_hour.pct;
+      if (real != null) return real;
+      return (this.usageSummary && this.usageSummary.window_pct) ?? null;
+    },
+
+    // "5.7M / 13%" — used tokens (local estimate) + real session %. Without the
+    // live endpoint: "~5.7M / ~11%（估算）".
+    get fiveHourLabel() {
+      const tok = this.usageSummary ? this.fmtTok(this.usageSummary.window_tokens) : null;
+      const real = this.planUsage && this.planUsage.five_hour && this.planUsage.five_hour.pct;
+      if (real != null) return (tok != null ? tok + ' / ' : '') + real + '%';
+      const est = this.usageSummary && this.usageSummary.window_pct;
+      if (tok != null) return '~' + tok + (est != null ? ' / ~' + est + '%' : '') + '（估算）';
+      return '';
+    },
+
+    // "reset in 3hr 4min" until the 5h session window rolls over. Bound to
+    // nowTick (ticks every 30s) so it counts down between SSE snapshots.
+    get fiveHourReset() {
+      const w = this.planUsage && this.planUsage.five_hour;
+      if (!w || !w.resets_at) return '';
+      const ms = new Date(w.resets_at).getTime() - this.nowTick;
+      if (isNaN(ms)) return '';
+      if (ms <= 0) return 'resetting…';
+      const mins = Math.round(ms / 60000);
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return 'reset in ' + (h ? h + 'hr ' : '') + m + 'min';
+    },
+
+    get fiveHourTitle() {
+      const u = this.usageSummary, p = this.planUsage;
+      let t = '目前 5 小時 session 用量';
+      if (u) t += `\n約 ${this.fmtTok(u.window_tokens)} billable tokens（input + cache 建立 + output，本機估算）`;
+      if (p && p.five_hour) t += `\n帳號實際 ${p.five_hour.pct}%${this.resetHint(p.five_hour)}`;
+      else t += '\n（無法取得帳號實際 %，百分比為對預算的本機估算）';
+      return t;
     },
 
     formatIdle(seconds) {

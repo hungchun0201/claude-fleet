@@ -55,6 +55,7 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
     last_block_type = ""
     last_text = ""
     last_tool = ""
+    api_error = False
     for raw in reversed(lines[-40:]):
         try:
             d = json.loads(raw)
@@ -65,6 +66,12 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
         msg = d.get("message") or {}
         content = msg.get("content") or []
         stop_reason = msg.get("stop_reason", "")
+        # Claude Code records API failures (model unavailable, no access, …) as
+        # a synthetic assistant row flagged isApiErrorMessage. Such a turn has
+        # no clean end_turn/tool_use stop_reason, so without flagging it here
+        # classify() would fall through to the idle<5min catch-all and wrongly
+        # read "working" for a session that is actually stuck waiting on /model.
+        api_error = bool(d.get("isApiErrorMessage")) or msg.get("model") == "<synthetic>"
         if isinstance(content, list) and content:
             last_block = content[-1]
             last_block_type = last_block.get("type", "")
@@ -89,6 +96,7 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
         "last_text": last_text[:200],
         "last_tool": last_tool,
         "has_pending_background": has_pending_background,
+        "api_error": api_error,
     }
 
 
@@ -197,12 +205,13 @@ def classify(window_dict: dict) -> dict:
             "suggestion": "",
         }
 
-    if status == "shell":
-        return {
-            "triage": "working",
-            "reason": "shell 行程執行中",
-            "suggestion": "",
-        }
+    # NOTE: status == "shell" is NOT treated as working. It means the turn has
+    # already ended (end_turn) and the agent is idle — only a background shell
+    # lingers (often a forgotten server or a bare `&` that never exits). We fall
+    # through to the transcript-based logic, so such a session reads "completed"
+    # (or "working" if a tracked run_in_background task is genuinely active, via
+    # the background_tasks check below). The lingering shell is surfaced as a
+    # 🐚 badge on the card (driven by w.status) rather than masking completion.
 
     if not transcript:
         return {
@@ -217,6 +226,29 @@ def classify(window_dict: dict) -> dict:
             "triage": "closeable",
             "reason": "transcript 是空的",
             "suggestion": "可以關閉",
+        }
+
+    # API failure at the tail (e.g. the selected model was disabled / revoked):
+    # the turn aborted and the session sits waiting for the user to pick a model.
+    # This must win over the idle<5min catch-all below, which would mislabel it
+    # "working" even though nothing is running.
+    if info.get("api_error"):
+        txt = (info.get("last_text") or "").strip()
+        m = re.search(r"model \(([^)]+)\)", txt)
+        model = m.group(1) if m else ""
+        low = txt.lower()
+        if "model" in low and ("exist" in low or "access" in low or "/model" in low):
+            who = f"模型 {model}" if model else "選用的模型"
+            return {
+                "triage": "stalled",
+                "reason": f"{who} 不可用，turn 已中斷（模型被停用？）— 需在終端機 /model 重選",
+                "suggestion": "在終端機執行 /model 選一個可用模型後重送",
+            }
+        short = txt.split("\n")[0][:100] or "未知錯誤"
+        return {
+            "triage": "stalled",
+            "reason": f"API 錯誤中斷：{short}",
+            "suggestion": "查看終端機錯誤，重試或切換模型",
         }
 
     stop = info["stop_reason"]

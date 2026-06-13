@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, alerts, codex, history, memory, patrol, perms, plans, search, sessions, skills, transcripts
+from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, search, sessions, shells, skills, transcripts, usage
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -93,6 +93,24 @@ async def _gpu_poller() -> None:
         await asyncio.sleep(5)
 
 
+# ---------- plan usage polling ----------
+#
+# The real plan limits come from an OAuth-gated endpoint (keychain read + HTTPS
+# fetch). That is too slow for the 2-second snapshot loop, so we refresh it on a
+# slow background poller; the snapshot only ever reads the cached value.
+
+PLAN_USAGE_POLL_INTERVAL_S = 60
+
+
+async def _plan_usage_poller() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(plan_usage.refresh)
+        except Exception as e:
+            print(f"[plan-usage-poller] error: {e}")
+        await asyncio.sleep(PLAN_USAGE_POLL_INTERVAL_S)
+
+
 def _attach_last_poll(pw: dict) -> None:
     """Decorate a GPU-wait record with the latest queue state we know."""
     host, ids = pw.get("ssh_host"), pw.get("job_ids")
@@ -141,6 +159,9 @@ def _enriched_snapshot() -> dict:
     perm_by_tty = perms.pending_by_tty()
     exec_reviews = codex.find_exec_reviews([w["pid"] for w in snap["windows"]])
     rollouts = codex.recent_rollouts()
+    # One process snapshot per tick, only when some session has a lingering
+    # shell — used to show what each 🐚 background shell is actually running.
+    shell_rows = shells._ps_rows() if any(w["status"] == "shell" for w in snap["windows"]) else None
     for w in snap["windows"]:
         tty = w.get("tty")
         if tty and tty in perm_by_tty:
@@ -187,14 +208,23 @@ def _enriched_snapshot() -> dict:
         if tp:
             w["skills_used"] = transcripts.extract_skills_used(tp)
             w["memory_ops"] = transcripts.extract_memory_ops(tp)
+            w["usage"] = transcripts.last_usage_and_model(tp)
         else:
             w["skills_used"] = []
             w["memory_ops"] = []
+            w["usage"] = None
+        # What the lingering background shell(s) are running (turn-done sessions).
+        w["shells"] = (
+            shells.background_shells(w["pid"], rows=shell_rows)
+            if w["status"] == "shell" and shell_rows is not None else []
+        )
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (
         patrol.TRIAGE_PRIORITY.get(w.get("triage", ""), 99),
         -w.get("updated_at", 0),
     ))
+    snap["usage_summary"] = usage.summary()
+    snap["plan_usage"] = plan_usage.cached()  # real limits; refreshed off-path
     return snap
 
 
@@ -227,7 +257,11 @@ async def _watcher() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    tasks = [asyncio.create_task(_watcher()), asyncio.create_task(_gpu_poller())]
+    tasks = [
+        asyncio.create_task(_watcher()),
+        asyncio.create_task(_gpu_poller()),
+        asyncio.create_task(_plan_usage_poller()),
+    ]
     try:
         yield
     finally:
