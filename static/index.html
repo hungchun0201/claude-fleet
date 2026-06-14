@@ -265,7 +265,8 @@
     <template x-for="w in filteredWindows" :key="w.pid">
       <div class="bg-white rounded-xl shadow-sm border hover:shadow-md transition cursor-pointer relative"
            :class="{ 'ring-2 ring-red-400': w.triage === 'waiting_perm', 'ring-2 ring-blue-400': expandedPid === w.pid }"
-           @click="toggleExpand(w.pid)">
+           title="點一下卡片即可跳到該終端機"
+           @click="focusWindow(w.pid)">
         <div class="p-4 pb-2">
           <div class="flex items-center gap-2 mb-1">
             <span class="inline-block w-3 h-3 rounded-full shrink-0" :class="'triage-' + w.triage"></span>
