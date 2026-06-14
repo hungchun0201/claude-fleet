@@ -262,17 +262,27 @@
 
   <!-- ===== Window cards grid ===== -->
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-    <template x-for="w in filteredWindows" :key="w.pid">
+    <template x-for="w in filteredWindows" :key="(w.host || 'local') + '-' + w.pid">
       <div class="bg-white rounded-xl shadow-sm border hover:shadow-md transition cursor-pointer relative"
            :class="{ 'ring-2 ring-red-400': w.triage === 'waiting_perm', 'ring-2 ring-blue-400': w.shell_pid && w.shell_pid === activeShellPid }"
            title="點一下卡片即可跳到該終端機"
            @click="focusWindow(w.pid)">
         <div class="p-4 pb-2">
+          <!-- Row 1: dot + name + status badge (name keeps the space). -->
           <div class="flex items-center gap-2 mb-1">
             <span class="inline-block w-3 h-3 rounded-full shrink-0" :class="'triage-' + w.triage"></span>
-            <span class="font-semibold text-sm truncate" x-text="w.name || w.first_input || w.project_name"></span>
+            <span class="font-semibold text-sm truncate flex-1 min-w-0" x-text="w.name || w.first_input || w.project_name"></span>
             <span class="text-[10px] px-1.5 rounded-full text-white shrink-0" :class="'triage-' + w.triage"
                   x-text="w.triage"></span>
+          </div>
+          <!-- Row 2: every other (status-like) badge, free to wrap below the name. -->
+          <div class="flex flex-wrap gap-1 mb-1"
+               x-show="(w.remote && !w.attached) || w.stale || w.pending_wakeup || w.codex_review || w.workflow_run || w.status === 'shell'">
+            <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-amber-100 text-amber-700"
+                  x-show="w.remote && !w.attached"
+                  title="本機沒有終端附著（tmux 仍在遠端）— 點卡片會提示如何用 claude-lab 重新附著">未附著</span>
+            <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-gray-200 text-gray-500"
+                  x-show="w.stale" title="與遠端的連線中斷，顯示的是最後已知狀態">連線中斷</span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.pending_wakeup"
                   :class="w.pending_wakeup?.overdue ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'"
@@ -285,14 +295,17 @@
                   x-show="w.workflow_run"
                   :class="w.workflow_run?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'"
                   x-text="w.workflow_run?.stalled ? '⚙️ Workflow 卡住?' : '⚙️ Workflow'"></span>
-            <!-- Lingering background shell: the turn is over but a shell stays
-                 alive (forgotten server / bare `&`). Shown even when the card
-                 reads "completed", so a dead shell never hides as "working". -->
             <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-orange-100 text-orange-700"
                   x-show="w.status === 'shell'"
                   title="對話回合已結束，但仍有背景 shell 在執行（可能是忘了關的 server 或殘留的 &）。可到終端機按 ↓ 管理或關閉。">🐚 shell</span>
           </div>
-          <div class="text-xs text-gray-500 truncate" x-text="prettyPath(w.cwd)" :title="prettyPath(w.cwd)"></div>
+          <div class="flex items-center gap-1.5 text-xs text-gray-500">
+            <!-- Host is a location, not a status — it sits inline before the path. -->
+            <span class="bg-sky-100 text-sky-700 px-1.5 rounded-full shrink-0" x-show="w.remote"
+                  :title="'遠端 session（' + w.host + '）— 點卡片會 focus 本機附著的終端'"
+                  x-text="'🖥 ' + w.host"></span>
+            <span class="truncate" x-text="prettyPath(w.cwd)" :title="prettyPath(w.cwd)"></span>
+          </div>
         </div>
         <div class="px-4 pb-2 text-xs space-y-1">
           <!-- Line 3: the user's most recent prompt (always shown when known). -->
@@ -386,7 +399,10 @@
             </span>
           </div>
         </div>
-        <div class="px-4 pb-3 pt-1 flex gap-2 flex-wrap" @click.stop>
+        <!-- Remote sessions: the per-window action buttons drive local-pid
+             endpoints (and Close could SIGTERM the wrong local pid), so hide them.
+             Clicking the card still focuses the attached terminal. -->
+        <div class="px-4 pb-3 pt-1 flex gap-2 flex-wrap" @click.stop x-show="!w.remote">
           <button @click="toggleExpand(w.pid)"
                   class="text-xs border border-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition">
             Timeline</button>

@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, search, sessions, shells, skills, transcripts, usage, vscode
+from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, remote, search, sessions, shells, skills, transcripts, usage, vscode
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -111,6 +111,35 @@ async def _plan_usage_poller() -> None:
         await asyncio.sleep(PLAN_USAGE_POLL_INTERVAL_S)
 
 
+# ---------- remote (lab) session polling ----------
+#
+# claude-lab sessions live on a remote box; SSH-polling their session files is
+# too slow for the 2s loop, so a background poller fetches them and the snapshot
+# merges the cached result. If the host goes unreachable the last-known sessions
+# stay (marked stale) until a poll succeeds again — the tmux survives the drop.
+
+LAB_POLL_INTERVAL_S = 8
+LAB_STALE_AFTER_S = 25
+
+_lab_cache: dict = {"ts": 0.0, "windows": []}
+
+
+async def _lab_poller() -> None:
+    while True:
+        try:
+            wins = await asyncio.to_thread(remote.poll)
+            # Only overwrite on a real result; a transient SSH failure ([]) keeps
+            # the last-known sessions (they're staying alive in tmux regardless).
+            if wins:
+                _lab_cache["windows"] = wins
+                _lab_cache["ts"] = time.time()
+            elif _lab_cache["windows"] and (time.time() - _lab_cache["ts"]) > 600:
+                _lab_cache["windows"] = []  # gone for 10 min → assume host down/rebooted
+        except Exception as e:
+            print(f"[lab-poller] error: {e}")
+        await asyncio.sleep(LAB_POLL_INTERVAL_S)
+
+
 def _attach_last_poll(pw: dict) -> None:
     """Decorate a GPU-wait record with the latest queue state we know."""
     host, ids = pw.get("ssh_host"), pw.get("job_ids")
@@ -151,6 +180,44 @@ def _ui_version() -> str:
         return str(int((STATIC_DIR / "index.html").stat().st_mtime))
     except OSError:
         return "0"
+
+
+def _remote_status_triage(w: dict) -> dict:
+    """Triage a remote session with no transcript yet — status/idle only."""
+    idle = w.get("idle_seconds", 0)
+    if w.get("status") == "busy" and idle < patrol.IDLE_THRESHOLD:
+        return {"triage": "working", "reason": "工作中", "suggestion": ""}
+    if idle >= patrol.CLOSEABLE_THRESHOLD:
+        return {"triage": "closeable", "reason": f"閒置 {idle // 60}m", "suggestion": "可關閉"}
+    return {"triage": "completed", "reason": f"閒置 {idle // 60}m", "suggestion": ""}
+
+
+def _enrich_remote(rw: dict, vs_info: dict | None, stale: bool) -> dict:
+    """Turn a cached remote (lab) session into a full window dict for the card."""
+    w = dict(rw)
+    tp = w.get("transcript_path")
+    # Is a local laptop terminal attached to this tmux right now? If so it's
+    # focusable (reuse the VS Code focus) and the active-ring can mark it.
+    att = remote.local_attachment_pid(w.get("name"), vs_info) if vs_info else None
+    w["attached"] = att is not None
+    w["attached_pid"] = att
+    d = vscode.detect(att, vs_info) if att and vs_info else None
+    w["shell_pid"] = d["shell_pid"] if d else None
+    w["stale"] = stale
+    if tp:
+        w["current_task"] = transcripts.current_task_hint(tp)
+        w["last_user_input"] = transcripts.last_user_input(tp)
+        w["usage"] = transcripts.last_usage_and_model(tp)
+        w["skills_used"] = transcripts.extract_skills_used(tp)
+        w["memory_ops"] = transcripts.extract_memory_ops(tp)
+    else:
+        w.update(current_task=None, last_user_input=None, usage=None, skills_used=[], memory_ops=[])
+    # Fields the local enrichment sets that don't apply to a remote session.
+    w.update(permission_msg=None, permission_ts=None, background_tasks=[],
+             workflow_run=None, pending_wakeup=None, codex_review=None, first_input=None)
+    tri = patrol.classify(w) if tp else _remote_status_triage(w)
+    w["triage"], w["triage_reason"], w["triage_suggestion"] = tri["triage"], tri["reason"], tri["suggestion"]
+    return w
 
 
 def _enriched_snapshot() -> dict:
@@ -226,6 +293,15 @@ def _enriched_snapshot() -> dict:
         # Terminal shell pid (== vscode.window.activeTerminal.processId when this
         # is the active one); the client rings the matching card.
         w["shell_pid"] = (vscode.detect(w["pid"], vs_info) or {}).get("shell_pid") if vs_info else None
+    # Merge remote (lab) sessions, enriched the same way. Reuse the process tree
+    # already built for local windows (it also contains the claude-lab procs).
+    if _lab_cache["windows"]:
+        if vs_info is None:
+            vs_info = vscode._ps_parents()
+        stale = (time.time() - _lab_cache["ts"]) > LAB_STALE_AFTER_S
+        for rw in _lab_cache["windows"]:
+            snap["windows"].append(_enrich_remote(rw, vs_info, stale))
+
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (
         patrol.TRIAGE_PRIORITY.get(w.get("triage", ""), 99),
@@ -269,6 +345,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_watcher()),
         asyncio.create_task(_gpu_poller()),
         asyncio.create_task(_plan_usage_poller()),
+        asyncio.create_task(_lab_poller()),
     ]
     try:
         yield
@@ -346,6 +423,18 @@ def api_plan_by_name(name: str) -> dict:
 
 @app.post("/api/windows/{pid}/focus")
 def api_focus(pid: int) -> dict:
+    # Remote (lab) session: focus the laptop terminal attached to its tmux. If
+    # nothing is attached, the tmux still lives on the host — tell the user to
+    # reattach with claude-lab.
+    for rw in _lab_cache["windows"]:
+        if rw.get("pid") == pid:
+            att = remote.local_attachment_pid(rw.get("name"), vscode._ps_parents())
+            if not att:
+                suffix = (rw.get("name") or "").removeprefix("lab-")
+                return {"ok": False, "detached": True,
+                        "error": f"沒有本機終端附著（tmux 仍在 {rw.get('host')} 上）— 在 VSCode 執行 `claude-lab {suffix}` 重新附著"}
+            return vscode.focus(att) or {"ok": False, "error": "attached terminal is not a VS Code terminal"}
+
     w = sessions.find_window(pid)
     if not w:
         raise HTTPException(404, "window not found")
