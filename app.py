@@ -127,14 +127,13 @@ _lab_cache: dict = {"ts": 0.0, "windows": []}
 async def _lab_poller() -> None:
     while True:
         try:
-            wins = await asyncio.to_thread(remote.poll)
-            # Only overwrite on a real result; a transient SSH failure ([]) keeps
-            # the last-known sessions (they're staying alive in tmux regardless).
-            if wins:
+            ok, wins = await asyncio.to_thread(remote.poll)
+            # ok (even with []) is authoritative: update the cache, so a session
+            # that ended on the host disappears. Only a real SSH failure (not ok)
+            # keeps the last-known sessions, which the snapshot marks stale.
+            if ok:
                 _lab_cache["windows"] = wins
                 _lab_cache["ts"] = time.time()
-            elif _lab_cache["windows"] and (time.time() - _lab_cache["ts"]) > 600:
-                _lab_cache["windows"] = []  # gone for 10 min → assume host down/rebooted
         except Exception as e:
             print(f"[lab-poller] error: {e}")
         await asyncio.sleep(LAB_POLL_INTERVAL_S)

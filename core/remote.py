@@ -70,9 +70,13 @@ def _build_script() -> str:
 
 
 def _ssh_fetch(host: str) -> Optional[str]:
+    """Remote stdout on success (possibly "" when no sessions), or None on a real
+    SSH failure. ControlPath=none keeps this poll on its own connection so the
+    user's interactive ssh/Ctrl-C can't drag it down via a shared master."""
     try:
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", host, "sh", "-s"],
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12",
+             "-o", "ControlPath=none", host, "sh", "-s"],
             input=_build_script(), capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
         )
     except Exception:
@@ -147,14 +151,23 @@ def _parse(host: str, stream: str) -> list[dict]:
     return out
 
 
-def poll() -> list[dict]:
-    """Fetch alive remote sessions across all configured hosts (blocking)."""
+def poll() -> tuple[bool, list[dict]]:
+    """Fetch alive remote sessions across all hosts (blocking).
+
+    Returns (ok, windows). `ok` is True when every host's SSH succeeded — even
+    if it found zero sessions. An empty list with ok=True means the sessions
+    genuinely ended (clear them); ok=False means a host was unreachable (keep
+    the last-known sessions, marked stale).
+    """
     windows: list[dict] = []
+    ok = True
     for host in _hosts():
         stream = _ssh_fetch(host)
-        if stream:
-            windows.extend(_parse(host, stream))
-    return windows
+        if stream is None:
+            ok = False
+            continue
+        windows.extend(_parse(host, stream))
+    return ok, windows
 
 
 def local_attachment_pid(name: Optional[str], ps_info: dict) -> Optional[int]:

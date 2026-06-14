@@ -53,3 +53,13 @@ def test_local_attachment_pid_matches_claude_lab():
     assert remote.local_attachment_pid("lab-nope", ps) is None
     assert remote.local_attachment_pid(None, ps) is None
     assert remote.local_attachment_pid("not-lab-prefixed", ps) is None
+
+
+@pytest.mark.unit
+def test_poll_distinguishes_empty_from_failure(monkeypatch):
+    # SSH succeeded but no lab sessions -> ok=True, [] (clear the cache).
+    monkeypatch.setattr(remote, "_ssh_fetch", lambda h: "")
+    assert remote.poll() == (True, [])
+    # SSH failed -> ok=False (keep last-known, mark stale).
+    monkeypatch.setattr(remote, "_ssh_fetch", lambda h: None)
+    assert remote.poll() == (False, [])
