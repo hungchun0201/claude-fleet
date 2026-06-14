@@ -162,9 +162,10 @@ def _enriched_snapshot() -> dict:
     # One process snapshot per tick, only when some session has a lingering
     # shell — used to show what each 🐚 background shell is actually running.
     shell_rows = shells._ps_rows() if any(w["status"] == "shell" for w in snap["windows"]) else None
-    # Which VS Code terminal is the user currently on (reported by the extension)?
-    vs_active_pid = vscode.active_shell_pid()
-    vs_info = vscode._ps_parents() if vs_active_pid else None
+    # Per-window terminal shell pid. The active-terminal ring is matched against
+    # this on the CLIENT (which polls /api/vscode-active at ~250ms) so the
+    # highlight is near-instant instead of waiting for the 2s snapshot.
+    vs_info = vscode._ps_parents() if snap["windows"] else None
     for w in snap["windows"]:
         tty = w.get("tty")
         if tty and tty in perm_by_tty:
@@ -222,11 +223,9 @@ def _enriched_snapshot() -> dict:
             shells.background_shells(w["pid"], rows=shell_rows)
             if w["status"] == "shell" and shell_rows is not None else []
         )
-        # Is this the VS Code terminal the user is currently on? (blue ring)
-        w["vscode_active"] = bool(
-            vs_active_pid and vs_info
-            and (vscode.detect(w["pid"], vs_info) or {}).get("shell_pid") == vs_active_pid
-        )
+        # Terminal shell pid (== vscode.window.activeTerminal.processId when this
+        # is the active one); the client rings the matching card.
+        w["shell_pid"] = (vscode.detect(w["pid"], vs_info) or {}).get("shell_pid") if vs_info else None
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (
         patrol.TRIAGE_PRIORITY.get(w.get("triage", ""), 99),
@@ -638,6 +637,14 @@ def api_memory(project: str | None = None) -> dict:
 @app.get("/api/perms")
 def api_perms() -> dict:
     return perms.snapshot()
+
+
+@app.get("/api/vscode-active")
+def api_vscode_active() -> dict:
+    """Shell pid of the user's currently-active VS Code terminal (polled fast by
+    the client to ring the matching card without snapshot lag). Just reads one
+    small file the companion extension keeps current."""
+    return {"pid": vscode.active_shell_pid()}
 
 
 @app.get("/api/events")
