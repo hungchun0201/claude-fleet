@@ -66,6 +66,27 @@ def test_nested_shell_not_counted_as_child_program():
 
 
 @pytest.mark.unit
+def test_young_shell_is_ignored():
+    # A seconds-old command shell (e.g. a diagnostic caught during the
+    # busy→shell flip) must not be reported as a lingering background shell.
+    rows = [
+        (SESSION, 1, "29:00", "claude"),
+        (2001, SESSION, "00:05", _zsh("just-started")),  # 5s old
+        (2002, 2001, "00:05", "python3 -c 'x'"),
+    ]
+    assert shells.background_shells(SESSION, rows=rows) == []
+
+
+@pytest.mark.unit
+def test_etime_parsing():
+    assert shells._etime_seconds("05") == 0          # malformed (no colon)
+    assert shells._etime_seconds("00:14") == 14
+    assert shells._etime_seconds("15:00") == 900
+    assert shells._etime_seconds("01:02:03") == 3723
+    assert shells._etime_seconds("2-03:00:00") == 2 * 86400 + 3 * 3600
+
+
+@pytest.mark.unit
 def test_no_rows_returns_empty():
     assert shells.background_shells(SESSION, rows=[]) == []
 

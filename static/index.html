@@ -672,6 +672,8 @@ function fleet() {
     counts: { total: 0, busy: 0, waiting: 0, idle: 0 },
     usageSummary: null,
     planUsage: null,
+    lastSnapshotAt: 0,
+    _liveMode: false,
     statusFilter: '',
     searchQuery: '',
     searchResults: null,
@@ -711,29 +713,40 @@ function fleet() {
     },
 
     init() {
-      fetch('/api/windows').then(r => r.json()).then(d => this.applySnapshot(d));
+      this.lastSnapshotAt = Date.now();
+      fetch('/api/windows').then(r => r.json()).then(d => this.applySnapshot(d)).catch(() => {});
       this.loadHistory(1);
       // ?snapshot renders a one-shot static view (no live SSE) — handy for
       // embeds and for headless screenshots.
       if (!new URLSearchParams(location.search).has('snapshot')) {
-        this.evtSource = new EventSource('/api/events');
-        this.evtSource.addEventListener('snapshot', (e) => {
-          this.applySnapshot(JSON.parse(e.data));
-        });
-        this.evtSource.onerror = () => {
-          setTimeout(() => {
-            if (this.evtSource) this.evtSource.close();
-            this.evtSource = new EventSource('/api/events');
-            this.evtSource.addEventListener('snapshot', (e) => {
-              this.applySnapshot(JSON.parse(e.data));
-            });
-          }, 5000);
-        };
+        this._liveMode = true;
+        this.connectSSE();
       }
       this._applyHashRoute();
       window.addEventListener('hashchange', () => this._applyHashRoute());
-      // Keep wakeup countdowns ("約 Xm 後") fresh between SSE snapshots.
-      setInterval(() => { this.nowTick = Date.now(); }, 30000);
+      setInterval(() => {
+        this.nowTick = Date.now();  // keep countdowns fresh between snapshots
+        // Self-heal: if the live stream has gone silent (laptop slept, SSE
+        // dropped) the dashboard would show stale data (e.g. fall back to the
+        // usage estimate). Reconnect and re-fetch so it recovers on its own.
+        if (this._liveMode && Date.now() - this.lastSnapshotAt > 90000) {
+          fetch('/api/windows').then(r => r.json()).then(d => this.applySnapshot(d)).catch(() => {});
+          this.connectSSE();
+        }
+      }, 30000);
+    },
+
+    connectSSE() {
+      if (this.evtSource) { try { this.evtSource.close(); } catch (e) { /* ignore */ } }
+      const es = new EventSource('/api/events');
+      es.addEventListener('snapshot', (e) => {
+        // A single malformed message must not wedge the stream — drop it and
+        // keep going; the next snapshot (2s later) is independent.
+        try { this.applySnapshot(JSON.parse(e.data)); } catch (err) { /* ignore */ }
+      });
+      es.addEventListener('heartbeat', () => { this.lastSnapshotAt = Date.now(); });
+      es.onerror = () => { setTimeout(() => { if (this._liveMode) this.connectSSE(); }, 5000); };
+      this.evtSource = es;
     },
 
     // Deep-link panels via URL hash: #skills, #memory, #search=<q>, #timeline=<sid>
@@ -747,6 +760,7 @@ function fleet() {
     },
 
     applySnapshot(snap) {
+      this.lastSnapshotAt = Date.now();
       // Self-heal a stale frontend: if the server's index.html changed since
       // this page loaded, hard-reload so new payload fields render correctly.
       if (snap.ui_version) {

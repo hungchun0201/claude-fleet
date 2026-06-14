@@ -20,6 +20,31 @@ from typing import Optional
 
 SNAPSHOT_SIG = "shell-snapshots/snapshot-"
 
+# A genuinely lingering shell has been alive a while; a transient command shell
+# (a quick foreground command caught during the busy→shell status flip) is only
+# seconds old. Ignore anything younger than this so diagnostics/hooks don't show
+# up as "background shells" (and can't pollute the snapshot).
+MIN_SHELL_AGE_S = 15
+
+
+def _etime_seconds(etime: str) -> int:
+    """Parse `ps` ELAPSED ([[DD-]HH:]MM:SS) to seconds; 0 on any oddity."""
+    try:
+        days = 0
+        if "-" in etime:
+            d, etime = etime.split("-", 1)
+            days = int(d)
+        parts = [int(x) for x in etime.split(":")]
+        if len(parts) == 3:
+            h, m, s = parts
+        elif len(parts) == 2:
+            h, m, s = 0, parts[0], parts[1]
+        else:
+            return 0
+        return days * 86400 + h * 3600 + m * 60 + s
+    except (ValueError, AttributeError):
+        return 0
+
 
 def _ps_rows() -> list[tuple[int, int, str, str]]:
     """(pid, ppid, etime, command) for every process, or [] on failure."""
@@ -82,6 +107,8 @@ def background_shells(session_pid: int, rows: Optional[list] = None) -> list[dic
         _, etime, cmd = info[pid]
         if SNAPSHOT_SIG not in cmd:
             continue  # not a Claude Code Bash-tool shell (MCP/infra/etc.)
+        if _etime_seconds(etime) < MIN_SHELL_AGE_S:
+            continue  # transient command shell, not a lingering one
         # What is this shell running? Its most informative non-shell child.
         kid_cmds = [
             info[k][2] for k in children.get(pid, [])
