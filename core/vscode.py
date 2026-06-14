@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 REQUEST_FILE = Path.home() / ".config" / "claude-fleet" / "vscode-focus"
+ACTIVE_FILE = Path.home() / ".config" / "claude-fleet" / "vscode-active"
 
 # An Electron pty host runs from inside the app bundle's Frameworks dir
 # (e.g. ".../Visual Studio Code 2.app/Contents/Frameworks/Code Helper (Plugin).app/...").
@@ -73,6 +74,17 @@ def detect(pid: int, info: Optional[dict] = None) -> Optional[dict]:
             return {"shell_pid": cur, "app": _app_name(parent_cmd)}
         cur = ppid
     return None
+
+
+def active_shell_pid() -> Optional[int]:
+    """The shell pid of the terminal the user currently has active in the editor,
+    as last reported by the companion extension (None if unknown)."""
+    try:
+        data = json.loads(ACTIVE_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    pid = data.get("pid")
+    return pid if isinstance(pid, int) else None
 
 
 def focus(pid: int) -> Optional[dict]:

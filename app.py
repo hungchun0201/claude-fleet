@@ -162,6 +162,9 @@ def _enriched_snapshot() -> dict:
     # One process snapshot per tick, only when some session has a lingering
     # shell — used to show what each 🐚 background shell is actually running.
     shell_rows = shells._ps_rows() if any(w["status"] == "shell" for w in snap["windows"]) else None
+    # Which VS Code terminal is the user currently on (reported by the extension)?
+    vs_active_pid = vscode.active_shell_pid()
+    vs_info = vscode._ps_parents() if vs_active_pid else None
     for w in snap["windows"]:
         tty = w.get("tty")
         if tty and tty in perm_by_tty:
@@ -173,10 +176,9 @@ def _enriched_snapshot() -> dict:
             w["permission_ts"] = None
         tp = w.get("transcript_path")
         if not w.get("name") and tp:
-            from core.history import _extract_first_user_text
-            first = _extract_first_user_text(Path(tp))
+            first = transcripts.first_user_input(tp)
             if first:
-                w["first_input"] = first[:100]
+                w["first_input"] = first
         if tp:
             w["current_task"] = transcripts.current_task_hint(tp)
             w["background_tasks"] = transcripts.extract_background_tasks(tp)
@@ -209,14 +211,21 @@ def _enriched_snapshot() -> dict:
             w["skills_used"] = transcripts.extract_skills_used(tp)
             w["memory_ops"] = transcripts.extract_memory_ops(tp)
             w["usage"] = transcripts.last_usage_and_model(tp)
+            w["last_user_input"] = transcripts.last_user_input(tp)
         else:
             w["skills_used"] = []
             w["memory_ops"] = []
             w["usage"] = None
+            w["last_user_input"] = None
         # What the lingering background shell(s) are running (turn-done sessions).
         w["shells"] = (
             shells.background_shells(w["pid"], rows=shell_rows)
             if w["status"] == "shell" and shell_rows is not None else []
+        )
+        # Is this the VS Code terminal the user is currently on? (blue ring)
+        w["vscode_active"] = bool(
+            vs_active_pid and vs_info
+            and (vscode.detect(w["pid"], vs_info) or {}).get("shell_pid") == vs_active_pid
         )
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (

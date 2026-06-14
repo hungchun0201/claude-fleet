@@ -264,7 +264,7 @@
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
     <template x-for="w in filteredWindows" :key="w.pid">
       <div class="bg-white rounded-xl shadow-sm border hover:shadow-md transition cursor-pointer relative"
-           :class="{ 'ring-2 ring-red-400': w.triage === 'waiting_perm', 'ring-2 ring-blue-400': expandedPid === w.pid }"
+           :class="{ 'ring-2 ring-red-400': w.triage === 'waiting_perm', 'ring-2 ring-blue-400': w.vscode_active }"
            title="點一下卡片即可跳到該終端機"
            @click="focusWindow(w.pid)">
         <div class="p-4 pb-2">
@@ -295,8 +295,14 @@
           <div class="text-xs text-gray-500 truncate" x-text="prettyPath(w.cwd)" :title="prettyPath(w.cwd)"></div>
         </div>
         <div class="px-4 pb-2 text-xs space-y-1">
-          <div class="text-gray-600 truncate" x-show="w.current_task" x-text="prettyPath(w.current_task)"></div>
-          <div class="text-gray-500 italic" x-text="w.triage_reason"></div>
+          <!-- Line 3: the user's most recent prompt (always shown when known). -->
+          <div class="text-gray-700 truncate" x-show="w.last_user_input" :title="prettyPath(w.last_user_input)">
+            <span class="text-gray-400">↳</span> <span x-text="prettyPath(w.last_user_input)"></span>
+          </div>
+          <!-- Line 4+: what the LLM is currently doing (skip a user-echo). -->
+          <div class="text-gray-500 truncate" x-show="w.current_task && !w.current_task.startsWith('↳')"
+               x-text="prettyPath(w.current_task)"></div>
+          <div class="text-gray-400 italic" x-text="w.triage_reason"></div>
           <!-- Pending wakeup (e.g. sleeping until the next PACE GPU check) -->
           <div x-show="w.pending_wakeup" class="rounded px-1.5 py-1 border text-[11px]"
                :class="w.pending_wakeup?.overdue ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-indigo-50 border-indigo-100 text-indigo-700'"
@@ -381,10 +387,6 @@
           </div>
         </div>
         <div class="px-4 pb-3 pt-1 flex gap-2 flex-wrap" @click.stop>
-          <button @click="focusWindow(w.pid)"
-                  class="text-xs px-2 py-1 rounded border transition"
-                  :class="w.triage === 'waiting_perm' ? 'border-red-300 text-red-600 hover:bg-red-50 font-medium' : 'border-gray-200 text-gray-600 hover:bg-gray-100'">
-            Focus</button>
           <button @click="toggleExpand(w.pid)"
                   class="text-xs border border-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition">
             Timeline</button>

@@ -201,6 +201,74 @@ def current_task_hint(path: str | Path) -> Optional[str]:
     return None
 
 
+# User messages also carry injected noise (tool results, slash-command output,
+# system reminders, task notifications). A message that *starts* with one of
+# these is not something the user typed.
+_USER_NOISE_PREFIXES = (
+    "<system-reminder", "<task-notification", "<local-command",
+    "<command-name", "<command-message", "<command-args",
+    "<user-prompt-submit-hook", "<bash-input", "<bash-stdout", "<bash-stderr",
+    "Caveat:",
+)
+
+
+def _genuine_user_text(content) -> Optional[str]:
+    """Clean typed text from a user-message `content`, or None if the message is
+    noise (a tool result, slash-command output, or reminder/notification wrapper).
+    Strips any appended <system-reminder> block from real input."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in content):
+            return None
+        text = " ".join(
+            c.get("text") or "" for c in content
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+    else:
+        return None
+    text = (text or "").strip()
+    if not text or text.startswith(_USER_NOISE_PREFIXES):
+        return None
+    clean = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
+    clean = " ".join(clean.split())
+    return clean or None
+
+
+def last_user_input(path: str | Path) -> Optional[str]:
+    """The user's most recent genuinely-typed prompt, as a one-line preview.
+    Reads only the tail, so a prompt buried under a very long agentic turn may
+    not be found (returns None then)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    for d in reversed(_tail_lines(p, 250)):
+        if d.get("type") != "user":
+            continue
+        t = _genuine_user_text((d.get("message") or {}).get("content"))
+        if t:
+            return t[:200]
+    return None
+
+
+def first_user_input(path: str | Path) -> Optional[str]:
+    """The session's first genuinely-typed prompt — a clean fallback title for
+    unnamed sessions (skips the caveat/command wrappers that pollute the very
+    first message)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    for i, d in enumerate(_iter_lines(p)):
+        if i > 300:
+            break
+        if d.get("type") != "user":
+            continue
+        t = _genuine_user_text((d.get("message") or {}).get("content"))
+        if t:
+            return t[:120]
+    return None
+
+
 def last_usage_and_model(path: str | Path) -> Optional[dict]:
     """Latest model + token usage for a session card.
 
