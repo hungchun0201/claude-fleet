@@ -32,23 +32,12 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
     except Exception:
         return None
 
-    # Check for active background tasks: only queue-operations AFTER the
-    # last assistant end_turn count. If the session moved on past the bg
-    # task phase, stale queue-ops don't indicate active work.
-    has_pending_background = False
-    last_end_turn_idx = -1
-    tail = lines[-30:]
-    for i, raw in enumerate(tail):
-        try:
-            d = json.loads(raw)
-        except Exception:
-            continue
-        t = d.get("type", "")
-        if t == "assistant" and (d.get("message") or {}).get("stop_reason") == "end_turn":
-            last_end_turn_idx = i
-            has_pending_background = False
-        elif t == "queue-operation" and i > last_end_turn_idx:
-            has_pending_background = True
+    # NOTE: we deliberately do NOT infer background work from queue-operation
+    # events. Those carry the user-input / task-notification queue (typeahead, a
+    # /slash command, or the delivery of a *completed* background task's
+    # notification) — an "enqueue"/"dequeue" after end_turn does not mean work is
+    # running, and treating it as such flipped finished sessions to "working".
+    # Real background work is detected structurally via extract_background_tasks.
 
     # Find the last assistant message for stop_reason etc.
     stop_reason = ""
@@ -95,7 +84,6 @@ def _last_assistant_info(transcript_path: str) -> Optional[dict]:
         "last_block_type": last_block_type,
         "last_text": last_text[:200],
         "last_tool": last_tool,
-        "has_pending_background": has_pending_background,
         "api_error": api_error,
     }
 
@@ -265,14 +253,6 @@ def classify(window_dict: dict) -> dict:
         return {
             "triage": "working",
             "reason": f"背景任務{count}執行中：{what}",
-            "suggestion": "",
-        }
-
-    if info.get("has_pending_background"):
-        summary = info["last_text"].split("\n")[0][:80] if info["last_text"] else ""
-        return {
-            "triage": "working",
-            "reason": f"有背景任務執行中。{summary}",
             "suggestion": "",
         }
 
