@@ -65,9 +65,9 @@ def test_typeahead_in_queue_is_most_recent(tmp_path):
         {"type": "queue-operation", "operation": "enqueue", "content": "有個問題 …"},
         {"type": "queue-operation", "operation": "enqueue", "content": "希望不要和斷線搞混"},
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}]}},
-        _u("ignored tool result"),  # noise after, but not genuine-er than the queue
+        _u_blocks({"type": "tool_result", "content": "stdout"}),  # noise after the queue
     ]
-    # last genuine input walking back = the latest enqueue
+    # walking back, the latest genuine input is the most-recent enqueue
     assert transcripts.last_user_input(_write(tmp_path, rows)) == "希望不要和斷線搞混"
 
 
