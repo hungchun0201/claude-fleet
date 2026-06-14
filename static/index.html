@@ -390,12 +390,14 @@
               <span x-text="formatIdle(w.idle_seconds)"></span> ·
               pid <span x-text="w.pid"></span>
             </span>
-            <!-- Current model + context-window fill for this session. -->
+            <!-- Current model + context-window fill + estimated cost for this session. -->
             <span class="inline-flex items-center gap-1" x-show="w.usage">
               <span class="rounded px-1.5 font-medium" :class="modelColor(w.usage?.model)"
                     x-text="modelShort(w.usage?.model)"></span>
               <span class="text-gray-500" :title="(w.usage?.context_tokens || 0).toLocaleString() + ' tokens 目前在 context window'"
                     x-text="fmtTok(w.usage?.context_tokens) + ' ctx'"></span>
+              <span class="text-gray-500 cursor-help" x-show="w.cost" :title="costTooltip(w.cost)"
+                    x-text="'· $' + (w.cost?.usd ?? 0)"></span>
             </span>
           </div>
         </div>
@@ -828,6 +830,14 @@ function fleet() {
       if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
       if (n >= 1e3) return Math.round(n / 1e3) + 'k';
       return String(n);
+    },
+
+    // Hover breakdown for the per-session cost estimate.
+    costTooltip(c) {
+      if (!c) return '';
+      return `這個 session 累計用量（估算 $${c.usd}，API 標準定價，非訂閱實付）\n`
+        + `input ${this.fmtTok(c.input)} · cache 建立 ${this.fmtTok(c.cache_write)} · `
+        + `cache 讀取 ${this.fmtTok(c.cache_read)} · output ${this.fmtTok(c.output)}`;
     },
 
     // Human-friendly model label from the raw id.

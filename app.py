@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, remote, search, sessions, shells, skills, transcripts, usage, vscode
+from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, pricing, remote, search, sessions, shells, skills, transcripts, usage, vscode
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -211,6 +211,9 @@ def _enrich_remote(rw: dict, vs_info: dict | None, stale: bool) -> dict:
         w["memory_ops"] = transcripts.extract_memory_ops(tp)
     else:
         w.update(current_task=None, last_user_input=None, usage=None, skills_used=[], memory_ops=[])
+    # Only a transcript tail is mirrored for remote sessions, so a cumulative
+    # cost would undercount — skip it.
+    w["cost"] = None
     # Fields the local enrichment sets that don't apply to a remote session.
     w.update(permission_msg=None, permission_ts=None, background_tasks=[],
              workflow_run=None, pending_wakeup=None, codex_review=None, first_input=None)
@@ -279,11 +282,13 @@ def _enriched_snapshot() -> dict:
             w["memory_ops"] = transcripts.extract_memory_ops(tp)
             w["usage"] = transcripts.last_usage_and_model(tp)
             w["last_user_input"] = transcripts.last_user_input(tp)
+            w["cost"] = pricing.cost(transcripts.session_token_totals(tp))
         else:
             w["skills_used"] = []
             w["memory_ops"] = []
             w["usage"] = None
             w["last_user_input"] = None
+            w["cost"] = None
         # What the lingering background shell(s) are running (turn-done sessions).
         w["shells"] = (
             shells.background_shells(w["pid"], rows=shell_rows)

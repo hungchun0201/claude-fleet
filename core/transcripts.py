@@ -277,6 +277,67 @@ def first_user_input(path: str | Path) -> Optional[str]:
     return None
 
 
+_TOTALS_CACHE: dict = {}
+
+
+def session_token_totals(path: str | Path) -> dict:
+    """Cumulative token usage for the whole session, grouped by model:
+    {model: {input, cache_read, output, cache_write_5m, cache_write_1h}}.
+
+    Reads the full transcript (cheap: a substring pre-filter skips the ~95% of
+    rows with no usage block before json.loads), cached by (mtime, size) so it
+    only recomputes when the transcript grows. Used for the per-card cost estimate.
+    """
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return {}
+    key = str(p)
+    cached = _TOTALS_CACHE.get(key)
+    if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2]
+
+    totals: dict = {}
+    try:
+        with p.open() as f:
+            for line in f:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("type") != "assistant":
+                    continue
+                msg = d.get("message") or {}
+                if not isinstance(msg, dict):
+                    continue
+                model = msg.get("model") or ""
+                usage = msg.get("usage")
+                if not isinstance(usage, dict) or model in ("", "<synthetic>"):
+                    continue
+                t = totals.setdefault(model, {
+                    "input": 0, "cache_read": 0, "output": 0,
+                    "cache_write_5m": 0, "cache_write_1h": 0,
+                })
+                t["input"] += int(usage.get("input_tokens") or 0)
+                t["cache_read"] += int(usage.get("cache_read_input_tokens") or 0)
+                t["output"] += int(usage.get("output_tokens") or 0)
+                cc = usage.get("cache_creation") or {}
+                m5 = int(cc.get("ephemeral_5m_input_tokens") or 0)
+                m1 = int(cc.get("ephemeral_1h_input_tokens") or 0)
+                if not (m5 or m1):  # no TTL split → assume the 5m default
+                    m5 = int(usage.get("cache_creation_input_tokens") or 0)
+                t["cache_write_5m"] += m5
+                t["cache_write_1h"] += m1
+    except OSError:
+        return {}
+
+    _TOTALS_CACHE[key] = (st.st_mtime, st.st_size, totals)
+    return totals
+
+
 def last_usage_and_model(path: str | Path) -> Optional[dict]:
     """Latest model + token usage for a session card.
 
