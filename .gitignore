@@ -9,3 +9,7 @@ __pycache__/
 # generated demo data + public mirror clone
 fixtures/demo-home/
 .public-mirror/
+
+# packaged VS Code extension build artifact
+vscode-extension/*.vsix
+vscode-extension/node_modules/

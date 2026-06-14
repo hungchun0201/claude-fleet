@@ -1,0 +1,14 @@
+{
+  "name": "claude-fleet-focus",
+  "displayName": "Claude Fleet Focus",
+  "description": "Lets the Claude Fleet dashboard focus a specific integrated terminal by shell PID.",
+  "version": "0.0.1",
+  "publisher": "claude-fleet",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/hungchun0201/claude-fleet" },
+  "engines": { "vscode": "^1.70.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {}
+}

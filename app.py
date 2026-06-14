@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, search, sessions, shells, skills, transcripts, usage
+from core import actions, alerts, codex, history, memory, patrol, perms, plan_usage, plans, search, sessions, shells, skills, transcripts, usage, vscode
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -341,6 +341,11 @@ def api_focus(pid: int) -> dict:
     w = sessions.find_window(pid)
     if not w:
         raise HTTPException(404, "window not found")
+    # Sessions inside a VS Code-family integrated terminal can't be raised by the
+    # Terminal.app/iTerm2 AppleScript — route them to the companion extension.
+    via_vscode = vscode.focus(pid)
+    if via_vscode is not None:
+        return via_vscode
     if not w.tty:
         return {"ok": False, "error": "no tty available for this pid"}
     return actions.focus_terminal(w.tty)
