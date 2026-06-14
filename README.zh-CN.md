@@ -94,18 +94,35 @@ memory 面板依類型（user / feedback / project / reference）分組，每筆
 
 ![](docs/screenshot-timeline.png)
 
+### Session 卡片
+
+每張卡片是一個 session 的即時摘要：
+
+- **狀態圓點 + triage 徽章**——working / waiting / stalled / completed / closeable。
+- **你最近一次的輸入**（`↳ …`）——你*親手打*的最後一句，已過濾雜訊（slash 命令輸出、tool result、reminder 都會被剝掉）。下一行則是 **LLM 目前在做什麼**（最新的 tool 呼叫或回覆）。
+- **Model + context 大小**——例如 `Opus 4.8 · 514k ctx`。
+- **藍框**標示你目前停在的 VSCode 終端（見下方 Focus 設定）。
+
+**點卡片任何地方即可跳到該終端機。** **Timeline** 按鈕展開 inline 對話 + plan 歷史。
+
 ### 動作
 
-| 按鈕 | 作用 |
+| 動作 | 作用 |
 |------|------|
-| Focus | 跳到那個終端機分頁 |
+| 點卡片 | focus 那個終端機 |
+| Timeline | 展開 inline timeline + plan 歷史 |
 | Fork | `claude --resume <sid> --fork-session`——新 session 繼承歷史 |
-| Resume | `claude --resume <sid>`——接續原 session |
 | Review | 背景跑 `claude -p` 審查；結論（PASS/FAIL/PARTIAL）顯示在卡片上 |
-| Close | SIGTERM |
+| Close | SIGTERM（closeable 的 session）|
 | Export | 匯出對話文件（timeline + plan 歷史 + skill/memory 摘要）|
 
-> **Focus 設定（macOS）。** Terminal.app 與 iTerm2 開箱即用——包含在 **tmux** 裡跑的 session（內建的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 把行程 tty → 所屬分頁 → 提到前景）。放一個可執行的 `~/.claude/focus-tty.sh`（接 `<tty>` 參數）即可自訂。
+> **Focus 設定（macOS）。**
+> - **Terminal.app / iTerm2**——含在 **tmux** 裡跑的 session：開箱即用。內建的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 把行程 tty → 所屬分頁 → 提到前景；放一個可執行的 `~/.claude/focus-tty.sh`（接 `<tty>` 參數）即可自訂。
+> - **VSCode 整合終端**（也支援 Cursor / VSCodium）：安裝內建的 companion extension 一次——
+>   ```bash
+>   bash scripts/install-vscode-extension.sh
+>   ```
+>   然後重載視窗（⇧⌘P → *Developer: Reload Window*，終端機會保留）。它用 shell PID 精準 focus 對的終端，並回報哪個終端是 active，讓 dashboard 近即時地把它框起來。
 
 ## 隱私
 
@@ -128,12 +145,14 @@ core/
   usage.py            本機 billable-token 聚合（5h 窗口）
   plan_usage.py       透過 /api/oauth/usage 取真實帳號上限（唯讀、快取）
   shells.py           即時背景 shell 檢視（行程樹）
+  vscode.py           focus VSCode 整合終端 + 回報目前 active 的終端
   codex.py            Codex session 解析 + 審查偵測
   search.py           跨平台 ripgrep 搜尋
   actions.py          focus / fork / review / close / export
   history.py          統一索引 + 全文 rg 搜尋
   skills.py / memory.py / plans.py / perms.py / alerts.py
 static/index.html     單檔 SPA
+vscode-extension/     companion extension（focus + 回報 active 終端）
 ```
 
 ## 致謝

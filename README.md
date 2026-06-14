@@ -134,22 +134,44 @@ reads dashed blue, memory writes pink — plus the session's plan version histor
 
 ![](docs/screenshot-timeline.png)
 
+### Session cards
+
+Every card is a live summary of one session:
+
+- **Status dot + triage badge** — working / waiting / stalled / completed / closeable.
+- **Your last prompt** (`↳ …`) — the most recent thing *you* typed, noise-filtered
+  (slash-command output, tool results, and reminders are stripped). The line below
+  is what the **LLM is currently doing** (its latest tool call or reply).
+- **Model + context size** — e.g. `Opus 4.8 · 514k ctx`.
+- **A blue ring** marks the VS Code terminal you're currently on (see Focus setup).
+
+**Click anywhere on a card to jump to its terminal.** The **Timeline** button
+expands the inline conversation + plan-history view.
+
 ### Actions
 
-| Button | What it does |
+| Action | What it does |
 |--------|--------------|
-| Focus | jump to that terminal tab |
+| Click card | focus that terminal |
+| Timeline | expand the inline timeline + plan history |
 | Fork | `claude --resume <sid> --fork-session` — new session inherits the history |
-| Resume | `claude --resume <sid>` — continue the original session |
 | Review | run `claude -p` review in the background; the verdict (PASS/FAIL/PARTIAL) shows on the card |
-| Close | SIGTERM |
+| Close | SIGTERM (closeable sessions) |
 | Export | export a conversation doc (timeline + plan history + skill/memory summary) |
 
-> **Focus setup (macOS).** Works out of the box on Terminal.app and iTerm2 —
-> including sessions running inside **tmux** (the bundled
-> [`scripts/focus-tty.sh`](scripts/focus-tty.sh) maps process tty → owning tab →
-> raises it). Drop an executable `~/.claude/focus-tty.sh` taking a `<tty>` arg to
-> customize.
+> **Focus setup (macOS).**
+> - **Terminal.app / iTerm2** — incl. sessions inside **tmux**: works out of the box.
+>   The bundled [`scripts/focus-tty.sh`](scripts/focus-tty.sh) maps process tty →
+>   owning tab → raises it; drop an executable `~/.claude/focus-tty.sh` taking a
+>   `<tty>` arg to customize.
+> - **VS Code integrated terminals** (also Cursor / VSCodium): install the bundled
+>   companion extension once —
+>   ```bash
+>   bash scripts/install-vscode-extension.sh
+>   ```
+>   then reload the window (⇧⌘P → *Developer: Reload Window* — terminals persist).
+>   It focuses the right terminal by its shell PID, and reports which terminal is
+>   active so the dashboard rings it in near-real-time.
 
 ## Privacy
 
@@ -175,12 +197,14 @@ core/
   usage.py            local billable-token aggregation (5h window)
   plan_usage.py       real account limits via /api/oauth/usage (read-only, cached)
   shells.py           live background-shell inspection (process tree)
+  vscode.py           focus VS Code integrated terminals + report the active one
   codex.py            Codex session parsing + review detection
   search.py           cross-platform ripgrep search
   actions.py          focus / fork / review / close / export
   history.py          unified index + full-text rg search
   skills.py / memory.py / plans.py / perms.py / alerts.py
 static/index.html     single-file SPA
+vscode-extension/     companion extension (focus + active-terminal reporting)
 ```
 
 ## Credits
