@@ -237,17 +237,25 @@ def _genuine_user_text(content) -> Optional[str]:
 
 def last_user_input(path: str | Path) -> Optional[str]:
     """The user's most recent genuinely-typed prompt, as a one-line preview.
-    Reads only the tail, so a prompt buried under a very long agentic turn may
-    not be found (returns None then)."""
+
+    Includes typeahead the user submitted while the assistant was still busy:
+    that text lives in `queue-operation` enqueue rows (not a user turn yet), and
+    is more recent than the last processed user message. Reads only the tail, so
+    a prompt buried under a very long agentic turn may not be found.
+    """
     p = Path(path)
     if not p.exists():
         return None
     for d in reversed(_tail_lines(p, 250)):
-        if d.get("type") != "user":
+        typ = d.get("type")
+        if typ == "user":
+            text = _genuine_user_text((d.get("message") or {}).get("content"))
+        elif typ == "queue-operation" and d.get("operation") == "enqueue":
+            text = _genuine_user_text(d.get("content"))
+        else:
             continue
-        t = _genuine_user_text((d.get("message") or {}).get("content"))
-        if t:
-            return t[:200]
+        if text:
+            return text[:200]
     return None
 
 

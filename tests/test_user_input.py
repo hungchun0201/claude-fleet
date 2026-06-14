@@ -57,6 +57,31 @@ def test_first_user_input_skips_caveat_wrapper(tmp_path):
 
 
 @pytest.mark.unit
+def test_typeahead_in_queue_is_most_recent(tmp_path):
+    # The user typed two messages while the assistant was busy → they live in
+    # queue-operation enqueue rows, more recent than the last processed turn.
+    rows = [
+        _u("舊的已處理輸入"),
+        {"type": "queue-operation", "operation": "enqueue", "content": "有個問題 …"},
+        {"type": "queue-operation", "operation": "enqueue", "content": "希望不要和斷線搞混"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}]}},
+        _u("ignored tool result"),  # noise after, but not genuine-er than the queue
+    ]
+    # last genuine input walking back = the latest enqueue
+    assert transcripts.last_user_input(_write(tmp_path, rows)) == "希望不要和斷線搞混"
+
+
+@pytest.mark.unit
+def test_queue_task_notification_is_not_user_input(tmp_path):
+    rows = [
+        _u("真的輸入"),
+        {"type": "queue-operation", "operation": "enqueue",
+         "content": "<task-notification><status>completed</status></task-notification>"},
+    ]
+    assert transcripts.last_user_input(_write(tmp_path, rows)) == "真的輸入"
+
+
+@pytest.mark.unit
 def test_no_genuine_input_returns_none(tmp_path):
     # A session that only ran slash commands has no typed prompt.
     rows = [_u("<command-name>/rename test</command-name>"),
