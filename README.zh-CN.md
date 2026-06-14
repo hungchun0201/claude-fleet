@@ -1,140 +1,150 @@
-[English](README.md) | 中文
+[English](README.md) | 繁體中文
 
 # Claude Fleet
 
-同时开 5-7 个 Claude Code 窗口 vibe coding 的时候，你需要一个地方看到所有窗口在干嘛、谁卡了、谁做完了。
+當你同時開著 5–7 個 Claude Code 視窗在 vibe coding，你需要一個地方一眼看完每個視窗在幹嘛——誰卡住了、誰在等你、誰做完了，以及你的用量額度還剩多少。
 
 ![](docs/screenshot-hero.png)
 
-## 30 秒跑起来
+> 一個並行管理多個 Claude Code（與 Codex）session 的儀表板。
+> 建構在 [tianyilt/claude-fleet](https://github.com/tianyilt/claude-fleet) 之上——
+> 詳見 [致謝](#致謝)。本 fork 新增了即時方案用量、每張卡片的 model/token 資訊、
+> PACE/Slurm GPU 佇列監控，以及更精準的 triage 判定。
+
+## 30 秒啟動
 
 ```bash
-git clone https://github.com/tianyilt/claude-fleet
+git clone https://github.com/hungchun0201/claude-fleet
 cd claude-fleet && bash run.sh
-# 浏览器打开 http://127.0.0.1:7878
+# 瀏覽器開 http://127.0.0.1:7878
 ```
 
-首次运行自动建 venv 装依赖，不用管。
+第一次執行會自動建立 venv 並安裝相依套件，不用額外設定。用 `CLAUDE_FLEET_PORT` 可改 port。
 
-## 解决什么问题
+後端只**讀取** `~/.claude/` 與 `~/.codex/`，從不修改任何 agent 狀態。每個人執行只會看到自己的 session。
 
-多窗口 vibe coding 的日常痛点：
+## 它解決什麼
 
-- **Permission 通知一闪而过** → 红条常驻顶部，点一下跳回对应终端
-- **不知道哪个窗口在干嘛** → 每张卡片显示当前任务、triage 状态、后台任务
-- **做完的窗口忘记关** → patrol 引擎自动标 closeable，一键关闭
-- **想找上周某个 session** → 全文搜索 50ms 返回，带 VS Code 风格匹配上下文
-- **Skill 用了多少次不知道** → 三维统计（invoke + file read/write + bash 引用）
-- **Memory 被谁改过** → 入度（↓被几个 session 参考）+ 出度（↑被几个 session 修改）
+多視窗 vibe coding 的日常痛點：
+
+- **授權提示一閃就錯過** → 頂端常駐紅條，點一下跳回那個終端機。
+- **不知道每個視窗在做什麼** → 每張卡片顯示當前任務、triage 狀態、model 與背景工作。
+- **不知道離用量上限還有多遠** → navbar 顯示你真實的 5 小時 session % 與每週全模型 %（含重置倒數）。
+- **做完的視窗一直開著沒關** → patrol 引擎標成 `closeable`，一鍵關閉。
+- **看起來在「忙」其實卡住了** → 模型被停用、或殘留的死 shell 會被獨立標示，不會偽裝成工作中。
+- **找不到上週那個 session** → 全文搜尋 ~50ms 回應，附 VS Code 風格的命中片段。
 
 ## 核心功能
 
-### Triage 分类
+### Triage 分類
 
-不是简单的 busy/idle。Patrol 引擎读 transcript 的 `stop_reason`、`queue-operation` 事件和后台任务状态：
+不是單純的 busy/idle。patrol 引擎讀每個 transcript 的 `stop_reason`、`queue-operation` 事件、API 錯誤列與背景任務狀態：
 
-| 状态 | 含义 | 怎么判的 |
-|------|------|---------|
-| 🟢 working | 在干活 | busy，或有活跃后台工作（bg Bash / Monitor / Workflow / Codex 审查 / 等 GPU） |
-| 🔴 waiting | 等你批准 | permission prompt / dialog open |
-| 🟡 stalled | 卡住了 | stop_reason=tool_use + 空闲>5min，或 Codex 审查/Workflow 卡死、唤醒过期 |
-| 🔵 completed | 做完了 | stop_reason=end_turn + 空闲>5min |
-| ⚪ closeable | 可以关了 | completed + 空闲>1h |
+| 狀態 | 意思 | 怎麼判定 |
+|------|------|----------|
+| 🟢 working | 工作中 | busy，或有實際背景工作（bg Bash / Monitor / Workflow / Codex 審查 / 等 GPU）|
+| 🔴 waiting | 等你處理 | 授權提示／對話框開著 |
+| 🟡 stalled | 卡住、需要你 | stop_reason=tool_use 且閒置 > 5 分；Codex/Workflow 卡死、喚醒過期；**或選用的模型中途被停用**（執行 `/model` 復原）|
+| 🔵 completed | 做完了 | stop_reason=end_turn 且閒置 > 5 分 |
+| ⚪ closeable | 可安心關閉 | completed 且閒置 > 1 小時 |
 
-判定全部走结构化信号——patrol 引擎配对 tool_use/tool_result 和 task
-notification，不对文字做关键字匹配，所以只是"聊到"后台任务的 session
-不会被误判成 working，跑完的任务也会自动清掉。具体追踪：
+分類是**結構化**的——配對 tool_use/tool_result 與 task 通知，而非用關鍵字比對文字，所以只是「提到」背景工作的 session 不會被誤判成 working，完成的任務也會自動清除。它追蹤：
 
-- **后台任务** —— `Bash run_in_background` / `Monitor persistent` / `Workflow`，
-  覆盖完整 spawn-ack → task-notification 生命周期。主回合结束但任务还在跑时，
-  卡片保持 `working` 而不是 `completed`。
-- **Workflow 运行** —— ⚙️ 徽章 + 实时 agent 进度（done/started，读 run 的
-  journal）；15 分钟无输出标记疑似卡死。
-- **等 GPU（Slurm）** —— 睡在 ScheduleWakeup 或跑队列轮询 waiter 的 session
-  显示 ⏳ 徽章和下次唤醒时间；dashboard 自己轮询 `sacct`/`squeue`，把最新
-  job 状态贴在卡片上。需要真正的 Slurm/GPU 词（`squeue`、job id、H100/L40S…），
-  光出现主机名不算。
-- **Codex 审查** —— 🔍 徽章覆盖 `codex exec` 子进程和进行中的 MCP 调用，
-  带卡死检测（rollout 停滞或缺失），可选 [ntfy](https://ntfy.sh) 一次性推送
-  告警。设 `CLAUDE_FLEET_NTFY_TOPIC` 或把 topic 写进
-  `~/.config/claude-fleet/ntfy-topic`；不设则告警关闭（topic 相当于弱密码，
-  因此源码里没有默认值）。
+- **背景任務** — `Bash run_in_background` / `Monitor persistent` / `Workflow`，從 spawn-ack → task-notification 的完整生命週期。turn 在它們執行中結束時維持 `working` 而非 `completed`。
+- **Workflow 執行** — ⚙️ 徽章顯示即時 agent 進度（從 run 的 journal 讀 done/started）；超過 15 分鐘無輸出標為卡死。
+- **模型被停用的 turn** — 當 turn 因選用模型被撤銷而中斷（合成的 API 錯誤列），卡片顯示 `stalled` 並提示 `/model`，而非誤判成「工作中」。
+- **殘留的背景 shell** — turn 結束但仍有背景 shell 活著（忘了關的 server、裸 `&`）時，卡片不再強制「工作中」：它會 completed，並顯示 🐚 徽章 + **那個 shell 實際在跑什麼**（從行程樹即時讀取），讓死 shell 不會偽裝成工作。
+- **等 GPU（Slurm / PACE）** — sleep 在 ScheduleWakeup 或跑 queue 輪詢的 session 會有 ⏳ 徽章與下次喚醒時間；儀表板自己透過 SSH 跑 `sacct`/`squeue`，把最新 job 狀態顯示在卡片上。需要真正的 Slurm/GPU 關鍵字（`squeue`、job id、H100/L40S…），單純 hostname 不算。
+- **Codex 審查** — 🔍 徽章標示 `codex exec` 子程序與進行中的 MCP 呼叫，含卡死偵測（靜默或缺 rollout）與可選的一次性 [ntfy](https://ntfy.sh) 推播。設 `CLAUDE_FLEET_NTFY_TOPIC` 或把 topic 寫進 `~/.config/claude-fleet/ntfy-topic`；不設 = 關閉告警（topic 形同密碼，因此沒有預設值）。
 
-### 搜索
+### 方案與 token 用量
 
-ripgrep 跨 Claude + Codex 全部 transcript，50ms 返回。不只搜 session 标题——搜 "hailuo" 能找到对话里提过 Hailuo 的 session，即使标题是 "你需要看下 klingai.com"。
+navbar 鏡像 **Settings → Usage**，用你帳號的真實數字——唯讀地從 `/api/oauth/usage` 取得，使用 Claude Code 存在你 keychain 的 OAuth token：
 
-每条结果带匹配上下文片段（最多 3 条），一眼看出为什么命中。
+- **`5h <tokens> / <pct>%`** — 目前 5 小時 session：本機 billable token 估算 + 帳號真實使用率 %，附 `reset in 3hr Xmin` 倒數。
+- **`week <pct>%`** — 每週全模型上限。
+
+即時取用跑在慢速背景 poller（約每 5 分鐘）所以不會卡住畫面；端點不可用時退回本機 token 估算；可用 `CLAUDE_FLEET_PLAN_USAGE=0` 關閉。每張卡片也顯示該 session 的 **model** 與**目前 context window 的 token 數**。
+
+> 該用量端點未公開且需 OAuth；這只是用**你自己的** token 對**你自己的**帳號做唯讀查詢。不想用就關掉。
+
+### 搜尋
+
+對所有 Claude + Codex transcript 跑 ripgrep，~50ms。不只搜標題——搜「hailuo」能找到對話中提過 Hailuo 的 session，即使標題是別的。每筆結果附最多 3 段命中片段，一眼看出為何命中。
 
 ![](docs/screenshot-search.png)
 
-### Skill / Memory 追踪
+### Skill / Memory 追蹤
 
-Skill 面板统计三个维度：
+skill 面板回報三個維度——正式的 `/skill` 呼叫、skill 檔的讀寫、以及 Bash 對 `skills/` 的引用：
 
 ```
 paper2video        333   1 invoke · ↓122 reads · ↑53 writes · 157 bash
 feishu-notify       45  24 invokes · ↓7 reads · ↑7 writes · 7 bash
-qzcli-topdowneval   12   3 invokes · ↓1 reads · ↑2 writes · 6 bash
 ```
 
-只统计 `/skill-name` 正式调用的话是 44 次；加上 Read/Write/Edit skill 文件 + Bash 里引用 skills/ 的操作，实际是 431 次。
-
-Memory 面板按 type 分组（user/feedback/project/reference），每条显示 `↓3 ↑2`（3 个 session 读过，2 个 session 改过）。
+memory 面板依類型（user / feedback / project / reference）分組，每筆顯示 `↓3 ↑2`（被 3 個 session 讀、被 2 個改）。
 
 ![](docs/screenshot-skills.png)
 ![](docs/screenshot-memory.png)
 
-### 时间线 + Plan 历史
+### Timeline + plan 歷史
 
-点开任意 session 看完整对话流。Skill 调用紫色、Memory 读蓝色虚线、Memory 写粉红色。
-
-Plan 版本历史：一个 session 通常迭代 5-14 次 plan，每次 Write 是完整快照，Edit 是红绿 diff。
+打開任一 session 看完整對話流——skill 呼叫紫色、memory 讀取藍色虛線、memory 寫入粉紅——以及該 session 的 plan 版本歷史（每次 Write 是完整快照，每次 Edit 是紅綠 diff）。
 
 ![](docs/screenshot-timeline.png)
 
-### 操作
+### 動作
 
-| 按钮 | 做什么 |
-|------|--------|
-| Focus | 跳到那个终端 tab |
-| Fork | `claude --resume <sid> --fork-session`，新 session 继承对话历史 |
-| Resume | `claude --resume <sid>`，继续原 session |
-| Review | 后台跑 `claude -p` 审查，结论（PASS/FAIL/PARTIAL）显示在卡片上 |
+| 按鈕 | 作用 |
+|------|------|
+| Focus | 跳到那個終端機分頁 |
+| Fork | `claude --resume <sid> --fork-session`——新 session 繼承歷史 |
+| Resume | `claude --resume <sid>`——接續原 session |
+| Review | 背景跑 `claude -p` 審查；結論（PASS/FAIL/PARTIAL）顯示在卡片上 |
 | Close | SIGTERM |
-| Export | 导出对话文档（带 timeline + plan 历史 + skill/memory 摘要）|
+| Export | 匯出對話文件（timeline + plan 歷史 + skill/memory 摘要）|
 
-> **Focus 设置（macOS）。** Focus 开箱即用，支持 Terminal.app 和 iTerm2——包括 session 跑在
-> **tmux** 里的情况（自带的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 会把进程 tty → 所属终端
-> tab → 切过去）。想换别的终端 / 窗口管理器，放一个可执行的 `~/.claude/focus-tty.sh`（接收一个
-> `<tty>` 参数）即可，它优先于自带默认。
+> **Focus 設定（macOS）。** Terminal.app 與 iTerm2 開箱即用——包含在 **tmux** 裡跑的 session（內建的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 把行程 tty → 所屬分頁 → 提到前景）。放一個可執行的 `~/.claude/focus-tty.sh`（接 `<tty>` 參數）即可自訂。
 
-## 架构
+## 隱私
 
-单文件前端（Alpine.js + Tailwind CDN，不需要 npm），Python 后端只读 `~/.claude/` 和 `~/.codex/`，不改任何 agent 状态。
+設計上可以安心分享與截圖：
+
+- **唯讀**：後端從不寫入 `~/.claude` / `~/.codex`。
+- **不洩漏路徑**：UI 把家目錄路徑顯示成 `~/…`，截圖不會露出你的 username。
+- **不內建密鑰**：ntfy topic 與方案用量都在 runtime 從你自己的 env/keychain 解析，不會 commit 任何個人資訊。
+
+## 架構
+
+單檔前端（Alpine.js + Tailwind 走 CDN，無 npm）。FastAPI 後端，每 2 秒透過 SSE 推送。
 
 ```
-app.py                FastAPI + SSE (2s 轮询)
+app.py                FastAPI + SSE；GPU 佇列與方案用量 poller
 core/
-  sessions.py         读 sessions/*.json，关联 TTY
-  transcripts.py      解析 JSONL，提取 skill/memory/plan/后台任务
-  patrol.py           triage 分类引擎
-  codex.py            Codex session 解析
-  search.py           ripgrep 跨平台搜索
+  sessions.py         讀 sessions/*.json，對應 TTY
+  transcripts.py      解析 JSONL；抽取 skill/memory/plan/背景任務/用量
+  patrol.py           triage 分類引擎
+  usage.py            本機 billable-token 聚合（5h 窗口）
+  plan_usage.py       透過 /api/oauth/usage 取真實帳號上限（唯讀、快取）
+  shells.py           即時背景 shell 檢視（行程樹）
+  codex.py            Codex session 解析 + 審查偵測
+  search.py           跨平台 ripgrep 搜尋
   actions.py          focus / fork / review / close / export
-  history.py          统一索引 + 全文 rg 搜索
-  skills.py           skill 目录扫描
-  memory.py           memory 文件解析
-  plans.py            plan 关联（从 transcript 提取）
-  perms.py            permission 事件
-static/index.html     单文件 SPA
+  history.py          統一索引 + 全文 rg 搜尋
+  skills.py / memory.py / plans.py / perms.py / alerts.py
+static/index.html     單檔 SPA
 ```
 
-## 致谢
+## 致謝
 
-- [HarnessKit](https://github.com/RealZST/HarnessKit) — 跨平台 skill 管理的 UI 参考
-- [Synergy](https://github.com/SII-Holos/synergy) — Memory engram 分类展示的灵感
+原作由 **[tianyilt](https://github.com/tianyilt)** 創建，即 [**tianyilt/claude-fleet**](https://github.com/tianyilt/claude-fleet)——triage 引擎、搜尋、skill/memory 追蹤，以及整個單檔架構都源自於此。本 repo 是在其基礎上的 fork，新增了即時方案用量、每張卡片的 model/token 資訊、PACE/Slurm GPU 佇列監控、模型錯誤 & 殘留 shell 的 triage，以及路徑遮蔽。原始設計的功勞全歸 tianyilt。
 
-## License
+上游也致謝：
+
+- [HarnessKit](https://github.com/RealZST/HarnessKit) — 跨平台 skill 管理的 UI 參考
+- [Synergy](https://github.com/SII-Holos/synergy) — memory-engram 分類視圖的靈感來源
+
+## 授權
 
 [MIT](LICENSE)

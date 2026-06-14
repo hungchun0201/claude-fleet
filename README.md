@@ -185,12 +185,12 @@ static/index.html     single-file SPA
 
 ## Credits
 
-Originally created by **[Tianyi (tianyilt)](https://github.com/tianyilt)** as
+Originally created by **[tianyilt](https://github.com/tianyilt)** as
 [**tianyilt/claude-fleet**](https://github.com/tianyilt/claude-fleet) — the triage
 engine, search, skill/memory tracking, and the whole single-file architecture come
 from there. This repository is a fork that adds live plan-usage limits, per-card
 model/token readouts, PACE/Slurm GPU-queue monitoring, model-error & lingering-shell
-triage, and path redaction. All credit for the original design goes to Tianyi.
+triage, and path redaction. All credit for the original design goes to tianyilt.
 
 Upstream also acknowledges:
 
