@@ -730,7 +730,7 @@ function fleet() {
         const pollActive = () => fetch('/api/vscode-active')
           .then(r => r.json()).then(d => { this.activeShellPid = d.pid; }).catch(() => {});
         pollActive();
-        setInterval(pollActive, 250);
+        setInterval(pollActive, 150);
       }
       this._applyHashRoute();
       window.addEventListener('hashchange', () => this._applyHashRoute());
