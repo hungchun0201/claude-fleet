@@ -77,7 +77,8 @@ def _ssh_fetch(host: str) -> Optional[str]:
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12",
              "-o", "ControlPath=none", host, "sh", "-s"],
-            input=_build_script(), capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
+            input=_build_script(), capture_output=True, text=True,
+            errors="replace", timeout=SSH_TIMEOUT_S,
         )
     except Exception:
         return None
@@ -186,7 +187,7 @@ def _ssh_cat(host: str, slug: str, sid: str) -> Optional[str]:
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12",
              "-o", "ControlPath=none", host, remote_cmd],
-            capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
+            capture_output=True, text=True, errors="replace", timeout=SSH_TIMEOUT_S,
         )
     except Exception:
         return None

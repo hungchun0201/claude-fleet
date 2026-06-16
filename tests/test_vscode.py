@@ -51,3 +51,21 @@ def test_app_name_extraction():
     assert vscode._app_name("/Applications/Cursor.app/Contents/Frameworks/x") == "Cursor"
     assert vscode._app_name("/x/VSCodium.app/Contents/MacOS/Electron") == "VSCodium"
     assert vscode._app_name("/usr/bin/zsh") is None
+
+
+@pytest.mark.unit
+def test_ps_parents_survives_non_utf8_command(monkeypatch):
+    # Regression: one process with a non-UTF-8 byte in its command line (here
+    # 0xba) must not blow up the whole table. Strict decode raised
+    # UnicodeDecodeError -> _ps_parents returned {} -> every focus / shell-pid /
+    # attachment lookup silently failed. The fix decodes with errors="replace".
+    raw = b"100 1 /sbin/launchd\n200 100 /Applications/Caf\xbe.app/x\n"
+
+    def fake_check_output(cmd, **kw):
+        # Emulate subprocess decoding the raw bytes with the requested handler.
+        return raw.decode("utf-8", errors=kw.get("errors", "strict"))
+
+    monkeypatch.setattr(vscode.subprocess, "check_output", fake_check_output)
+    info = vscode._ps_parents()
+    assert len(info) == 2  # strict decode would have made this {}
+    assert info[200][0] == 100

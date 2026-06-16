@@ -31,8 +31,11 @@ _HOST_MARK = ".app/Contents/Frameworks/"
 def _ps_parents() -> dict[int, tuple[int, str]]:
     """{pid: (ppid, command)} for every process."""
     try:
+        # errors="replace": a single process with a non-UTF-8 byte in its command
+        # line must not blow up the whole table (strict decode → {} → every focus
+        # / shell-pid / attachment lookup silently fails).
         out = subprocess.check_output(
-            ["ps", "-axo", "pid=,ppid=,command="], text=True, timeout=5,
+            ["ps", "-axo", "pid=,ppid=,command="], text=True, errors="replace", timeout=5,
         )
     except Exception:
         return {}
