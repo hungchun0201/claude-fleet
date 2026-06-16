@@ -79,7 +79,7 @@ def check(snapshot: dict, now: float | None = None) -> list[dict]:
             _alerted.add(key)
             name = w.get("name") or w.get("project_name") or f"pid {w.get('pid')}"
             due.append({
-                "title": f"Fleet: {name} 卡住",
+                "title": f"Fleet: {name} stalled",
                 "message": (w.get("triage_reason") or "stalled")[:300],
                 "tags": "rotating_light",
                 "priority": "high",
@@ -97,8 +97,8 @@ _warned_no_topic = False
 def push(alert: dict) -> bool:
     """Blocking ntfy POST; never raises (called fire-and-forget).
 
-    Title/tags/priority go in the query string — header values must be
-    latin-1 and ours contain CJK.
+    Title/tags/priority go in the URL-encoded query string rather than
+    headers, which must be latin-1; the body is sent UTF-8 encoded.
     """
     global _warned_no_topic
     topic = _topic()

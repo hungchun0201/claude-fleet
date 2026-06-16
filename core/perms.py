@@ -10,7 +10,7 @@ from typing import Optional
 FOCUS_LOG = Path("/tmp/claude-focus.log")
 
 # Sample line (from existing notify.sh):
-# 2026-01-01 12:00:00 CST notify: project=my-project tty=/dev/ttys000 msg=Bash 需要授权
+# 2026-01-01 12:00:00 CST notify: project=my-project tty=/dev/ttys000 msg=Bash needs permission
 _LINE_RE = re.compile(
     r"notify:\s+project=(?P<project>\S+)\s+tty=(?P<tty>\S*)\s+msg=(?P<msg>.+?)\s*$"
 )

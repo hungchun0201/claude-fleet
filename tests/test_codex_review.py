@@ -274,7 +274,7 @@ def test_classify_codex_review_working():
                           "silent_s": None, "current_action": None}}
     tri = classify(w)
     assert tri["triage"] == "working"
-    assert "Codex 審查中" in tri["reason"]
+    assert "Codex reviewing" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -285,4 +285,4 @@ def test_classify_codex_review_stalled():
                           "silent_s": 13000, "current_action": "output: yaml"}}
     tri = classify(w)
     assert tri["triage"] == "stalled"
-    assert "卡死" in tri["reason"]
+    assert "looks stalled" in tri["reason"]

@@ -170,6 +170,52 @@ def poll() -> tuple[bool, list[dict]]:
     return ok, windows
 
 
+def _shq(s: str) -> str:
+    """POSIX single-quote a string so the remote shell treats it as a literal."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _ssh_cat(host: str, slug: str, sid: str) -> Optional[str]:
+    """Remote transcript contents, or None on failure. ssh flattens argv into one
+    string and re-parses it through the remote login shell, so slug/sid are
+    single-quoted into the command (injection-safe) while $HOME stays unquoted to
+    expand remotely. ControlPath=none keeps it off any shared master the user's
+    interactive ssh might own."""
+    remote_cmd = f'cat "$HOME"/.claude/projects/{_shq(slug)}/{_shq(sid)}.jsonl'
+    try:
+        proc = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12",
+             "-o", "ControlPath=none", host, remote_cmd],
+            capture_output=True, text=True, timeout=SSH_TIMEOUT_S,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    return proc.stdout
+
+
+def fetch_full_transcript(host: Optional[str], cwd: Optional[str],
+                          session_id: Optional[str]) -> Optional[str]:
+    """SSH-fetch the COMPLETE remote transcript for a session, mirror it under
+    <tmp>/<host>/full/, and return the local path — or None if the host is
+    unreachable or the file is missing. Unlike the poll's 60KB tail, this is the
+    whole history, fetched on demand when the user opens a lab card's timeline."""
+    if not (host and cwd and session_id):
+        return None
+    body = _ssh_cat(host, _cwd_slug(cwd), session_id)
+    if not body:
+        return None
+    full_dir = _TMP_ROOT / host / "full"
+    try:
+        full_dir.mkdir(parents=True, exist_ok=True)
+        fp = full_dir / f"{session_id}.jsonl"
+        fp.write_text(body if body.endswith("\n") else body + "\n")
+    except OSError:
+        return None
+    return str(fp)
+
+
 def local_attachment_pid(name: Optional[str], ps_info: dict) -> Optional[int]:
     """The local pid running `claude-lab <suffix>` for a `lab-<suffix>` session,
     i.e. the laptop terminal currently attached to that remote tmux. None when

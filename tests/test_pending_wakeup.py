@@ -252,8 +252,8 @@ def test_classify_pending_gpu_wakeup_is_working(tmp_path):
     pw = {"kind": "gpu", "reason": GPU_REASON, "wake_at_ms": NOW_MS + 600_000, "overdue": False}
     tri = classify(_window(pw))
     assert tri["triage"] == "working"
-    assert "等 GPU" in tri["reason"]
-    assert "下次喚醒" in tri["reason"]
+    assert "Waiting on GPU" in tri["reason"]
+    assert "next wake" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -261,7 +261,7 @@ def test_classify_overdue_wakeup_is_stalled(tmp_path):
     pw = {"kind": "gpu", "reason": GPU_REASON, "wake_at_ms": NOW_MS - 600_000, "overdue": True}
     tri = classify(_window(pw, status="idle"))
     assert tri["triage"] == "stalled"
-    assert "喚醒已過期" in tri["reason"]
+    assert "wake overdue" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -269,7 +269,7 @@ def test_classify_generic_wakeup_label(tmp_path):
     pw = {"kind": "generic", "reason": "idle tick", "wake_at_ms": NOW_MS + 600_000, "overdue": False}
     tri = classify(_window(pw))
     assert tri["triage"] == "working"
-    assert "等待定時喚醒" in tri["reason"]
+    assert "Scheduled wake" in tri["reason"]
 
 
 @pytest.mark.unit
@@ -279,6 +279,27 @@ def test_classify_permission_prompt_beats_wakeup(tmp_path):
     w["waiting_for"] = "Bash"
     tri = classify(w)
     assert tri["triage"] == "waiting_perm"
+
+
+@pytest.mark.unit
+def test_enrich_remote_surfaces_scheduled_wake(tmp_path):
+    # Regression: a remote lab session sleeping on a ScheduleWakeup must read
+    # "working", not "completed"/"closeable" — extract_pending_wakeup is a pure
+    # tail parse, so it works without the run host. (Only the last_poll queue
+    # decoration is local-only and stays off for remote sessions.)
+    import app
+    sched = NOW_MS - 60_000
+    p = _write(tmp_path, [
+        _user_text_row(sched - 10_000),
+        _wakeup_row(sched, delay=1800, reason=GPU_REASON),
+        _tool_result_row(sched + 1_000),
+    ])
+    rw = {"pid": 1, "name": "lab-x", "status": "idle", "idle_seconds": 5000,
+          "updated_at": 0, "transcript_path": str(p)}
+    w = app._enrich_remote(rw, None, stale=False)
+    assert w["pending_wakeup"] is not None
+    assert w["pending_wakeup"].get("last_poll") is None  # local-only, skipped
+    assert w["triage"] == "working"
 
 
 # ---------- _tail_lines (seek-from-end tail) ----------

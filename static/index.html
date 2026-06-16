@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-Hant-TW">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -265,7 +265,7 @@
     <template x-for="w in filteredWindows" :key="(w.host || 'local') + '-' + w.pid">
       <div class="bg-white rounded-xl shadow-sm border hover:shadow-md transition cursor-pointer relative"
            :class="{ 'ring-2 ring-red-400': w.triage === 'waiting_perm', 'ring-2 ring-blue-400': w.shell_pid && w.shell_pid === activeShellPid }"
-           title="點一下卡片即可跳到該終端機"
+           title="Click a card to jump to its terminal"
            @click="focusWindow(w.pid)">
         <div class="p-4 pb-2">
           <!-- Row 1: dot + name + status badge (name keeps the space). -->
@@ -280,29 +280,29 @@
                x-show="(w.remote && !w.attached) || w.stale || w.pending_wakeup || w.codex_review || w.workflow_run || w.status === 'shell'">
             <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-amber-100 text-amber-700"
                   x-show="w.remote && !w.attached"
-                  title="本機沒有終端附著（tmux 仍在遠端）— 點卡片會提示如何用 claude-lab 重新附著">未附著</span>
+                  title="No local terminal attached (tmux still on the remote) — click the card for how to reattach with claude-lab">detached</span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-gray-200 text-gray-500"
-                  x-show="w.stale" title="與遠端的連線中斷，顯示的是最後已知狀態">連線中斷</span>
+                  x-show="w.stale" title="Connection to the remote dropped — showing last known state">disconnected</span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.pending_wakeup"
                   :class="w.pending_wakeup?.overdue ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'"
-                  x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ 等GPU' : '⏳ 定時喚醒'"></span>
+                  x-text="w.pending_wakeup?.kind === 'gpu' ? '⏳ GPU wait' : '⏳ scheduled wake'"></span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.codex_review"
                   :class="w.codex_review?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-violet-100 text-violet-700'"
-                  x-text="w.codex_review?.stalled ? '🔍 Codex 卡住?' : '🔍 Codex'"></span>
+                  x-text="w.codex_review?.stalled ? '🔍 Codex stuck?' : '🔍 Codex'"></span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0"
                   x-show="w.workflow_run"
                   :class="w.workflow_run?.stalled ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'"
-                  x-text="w.workflow_run?.stalled ? '⚙️ Workflow 卡住?' : '⚙️ Workflow'"></span>
+                  x-text="w.workflow_run?.stalled ? '⚙️ Workflow stuck?' : '⚙️ Workflow'"></span>
             <span class="text-[10px] px-1.5 rounded-full shrink-0 bg-orange-100 text-orange-700"
                   x-show="w.status === 'shell'"
-                  title="對話回合已結束，但仍有背景 shell 在執行（可能是忘了關的 server 或殘留的 &）。可到終端機按 ↓ 管理或關閉。">🐚 shell</span>
+                  title="The turn has ended but a background shell is still running (maybe a forgotten server or a stray &). Press ↓ in the terminal to manage or close it.">🐚 shell</span>
           </div>
           <div class="flex items-center gap-1.5 text-xs text-gray-500">
             <!-- Host is a location, not a status — it sits inline before the path. -->
             <span class="bg-sky-100 text-sky-700 px-1.5 rounded-full shrink-0" x-show="w.remote"
-                  :title="'遠端 session（' + w.host + '）— 點卡片會 focus 本機附著的終端'"
+                  :title="'Remote session (' + w.host + ') — click the card to focus the attached local terminal'"
                   x-text="'🖥 ' + w.host"></span>
             <span class="truncate" x-text="prettyPath(w.cwd)" :title="prettyPath(w.cwd)"></span>
           </div>
@@ -327,7 +327,7 @@
                  class="mt-1 bg-white/70 rounded p-1 text-[10px] leading-tight max-h-28 overflow-y-auto whitespace-pre font-mono text-indigo-900"
                  x-text="w.pending_wakeup?.last_poll?.text"></pre>
             <div class="opacity-70 text-[10px]" x-show="w.pending_wakeup?.last_poll"
-                 x-text="(w.pending_wakeup?.last_poll?.source === 'waiter' ? 'waiter 輸出 · ' : 'queue poll · ') + fmtAgo(w.pending_wakeup?.last_poll?.ago_s)"></div>
+                 x-text="(w.pending_wakeup?.last_poll?.source === 'waiter' ? 'waiter output · ' : 'queue poll · ') + fmtAgo(w.pending_wakeup?.last_poll?.ago_s)"></div>
           </div>
           <!-- Live Codex review (exec child process or in-flight MCP call) -->
           <div x-show="w.codex_review" class="rounded px-1.5 py-1 border text-[11px]"
@@ -337,7 +337,7 @@
               <button x-show="w.codex_review?.codex_session_id" @click.stop="openHistoryTimeline(w.codex_review.codex_session_id)"
                       class="border rounded px-1 text-[10px] hover:bg-violet-100 shrink-0"
                       :class="w.codex_review?.stalled ? 'border-amber-300 text-amber-700' : 'border-violet-300 text-violet-700'">
-                Codex 進度</button>
+                Codex progress</button>
             </div>
             <div class="truncate opacity-80" x-show="w.codex_review?.current_action" x-text="w.codex_review?.current_action"></div>
           </div>
@@ -361,7 +361,7 @@
                    :title="'pid ' + sh.pid">
                 🐚 <span x-show="sh.elapsed" class="opacity-60" x-text="sh.elapsed + ' · '"></span>
                 <span class="font-mono break-all whitespace-pre-wrap"
-                      x-text="sh.doing ? prettyPath(sh.doing) : '閒置 shell（無執行中的子程序，可關閉）'"></span>
+                      x-text="sh.doing ? prettyPath(sh.doing) : 'Idle shell (no running child process — safe to close)'"></span>
               </div>
             </template>
           </div>
@@ -370,7 +370,7 @@
             <template x-for="(bt, i) in (w.background_tasks||[])" :key="i">
               <div class="text-[10px] text-amber-700 bg-amber-50 rounded px-1.5 py-0.5 truncate">
                 <span class="font-medium" x-text="bt.type === 'monitor' ? 'Monitor' : (bt.type === 'workflow' ? 'Workflow' : 'Bash bg')"></span>:
-                <span x-text="bt.description || bt.command"></span>
+                <span x-text="bt.description || bt.command || bt.workflow_name"></span>
               </div>
             </template>
           </div>
@@ -394,12 +394,20 @@
             <span class="inline-flex items-center gap-1" x-show="w.usage">
               <span class="rounded px-1.5 font-medium" :class="modelColor(w.usage?.model)"
                     x-text="modelShort(w.usage?.model)"></span>
-              <span class="text-gray-500" :title="(w.usage?.context_tokens || 0).toLocaleString() + ' tokens 目前在 context window'"
+              <span class="text-gray-500" :title="(w.usage?.context_tokens || 0).toLocaleString() + ' tokens currently in the context window'"
                     x-text="fmtTok(w.usage?.context_tokens) + ' ctx'"></span>
               <span class="text-gray-500 cursor-help" x-show="w.cost" :title="costTooltip(w.cost)"
                     x-text="'· $' + (w.cost?.usd ?? 0)"></span>
             </span>
           </div>
+        </div>
+        <!-- Remote (lab) cards: a read-only Timeline that SSH-fetches the full
+             remote transcript on demand. The mutating actions stay hidden —
+             they target local pids. -->
+        <div class="px-4 pb-3 pt-1 flex gap-2 flex-wrap" @click.stop x-show="w.remote">
+          <button @click="openRemoteTimeline(w)"
+                  class="text-xs border border-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition">
+            Timeline</button>
         </div>
         <!-- Remote sessions: the per-window action buttons drive local-pid
              endpoints (and Close could SIGTERM the wrong local pid), so hide them.
@@ -438,13 +446,15 @@
         <span x-text="timelineData?.project_name || timelineData?.project_slug || ''"></span>
         <span class="text-xs text-gray-400 font-normal" x-text="'session:' + (timelineData?.session_id || '').slice(0,8)"></span>
         <span x-show="timelineData?.platform === 'codex'" class="text-[10px] bg-green-500 text-white px-1.5 rounded">codex</span>
+        <span x-show="timelineData?.partial" class="text-[10px] bg-amber-100 text-amber-700 px-1.5 rounded"
+              title="Host unreachable — showing the recent mirrored tail instead of the full transcript">tail only (host unreachable)</span>
       </h2>
       <div class="flex items-center gap-2">
         <button @click="showPlanHistory = !showPlanHistory"
                 x-show="timelineData?.plan_history?.length"
                 class="text-xs border border-purple-200 text-purple-600 px-2 py-1 rounded hover:bg-purple-50 transition"
                 :class="showPlanHistory ? 'bg-purple-50' : ''">
-          Plan · <span x-text="timelineData?.plan_history?.length || 0"></span> 版本</button>
+          Plan · <span x-text="timelineData?.plan_history?.length || 0"></span> versions</button>
         <button @click="expandedPid = null; expandedHistoryId = null; timelineData = null; planData = null"
                 class="text-gray-400 hover:text-gray-700 text-lg">&times;</button>
       </div>
@@ -457,9 +467,9 @@
           <button @click="showCurrentPlan(expandedPid || timelineData?.session_id)"
                   class="text-xs border border-purple-400 text-purple-700 px-2 py-0.5 rounded hover:bg-purple-100 font-medium"
                   :class="planData ? 'bg-purple-100' : ''">
-            查看目前 plan
+            View current plan
           </button>
-          <span class="text-xs text-gray-500" x-text="'· ' + (timelineData?.plan_history?.length || 0) + ' 個歷史版本'"></span>
+          <span class="text-xs text-gray-500" x-text="'· ' + (timelineData?.plan_history?.length || 0) + ' past versions'"></span>
         </div>
         <button @click="showPlanHistory = false" class="text-purple-400 hover:text-purple-700">&times;</button>
       </div>
@@ -816,12 +826,12 @@ function fleet() {
       return 'bg-emerald-100 text-emerald-800';
     },
 
-    // " · 重置 6/14 23:00" from a window's resets_at, or '' if absent.
+    // " · resets 6/14 23:00" from a window's resets_at, or '' if absent.
     resetHint(win) {
       if (!win || !win.resets_at) return '';
       const d = new Date(win.resets_at);
       if (isNaN(d.getTime())) return '';
-      return ' · 重置 ' + d.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      return ' · resets ' + d.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     },
 
     // Compact token count: 1.2M / 340k / 780.
@@ -835,9 +845,9 @@ function fleet() {
     // Hover breakdown for the per-session cost estimate.
     costTooltip(c) {
       if (!c) return '';
-      return `這個 session 累計用量（估算 $${c.usd}，API 標準定價，非訂閱實付）\n`
-        + `input ${this.fmtTok(c.input)} · cache 建立 ${this.fmtTok(c.cache_write)} · `
-        + `cache 讀取 ${this.fmtTok(c.cache_read)} · output ${this.fmtTok(c.output)}`;
+      return `This session's cumulative usage (est. $${c.usd}, standard API pricing, not subscription cost)\n`
+        + `input ${this.fmtTok(c.input)} · cache write ${this.fmtTok(c.cache_write)} · `
+        + `cache read ${this.fmtTok(c.cache_read)} · output ${this.fmtTok(c.output)}`;
     },
 
     // Human-friendly model label from the raw id.
@@ -871,13 +881,13 @@ function fleet() {
     },
 
     // "5.7M / 13%" — used tokens (local estimate) + real session %. Without the
-    // live endpoint: "~5.7M / ~11%（估算）".
+    // live endpoint: "~5.7M / ~11% (est.)".
     get fiveHourLabel() {
       const tok = this.usageSummary ? this.fmtTok(this.usageSummary.window_tokens) : null;
       const real = this.planUsage && this.planUsage.five_hour && this.planUsage.five_hour.pct;
       if (real != null) return (tok != null ? tok + ' / ' : '') + real + '%';
       const est = this.usageSummary && this.usageSummary.window_pct;
-      if (tok != null) return '~' + tok + (est != null ? ' / ~' + est + '%' : '') + '（估算）';
+      if (tok != null) return '~' + tok + (est != null ? ' / ~' + est + '%' : '') + ' (est.)';
       return '';
     },
 
@@ -896,10 +906,10 @@ function fleet() {
 
     get fiveHourTitle() {
       const u = this.usageSummary, p = this.planUsage;
-      let t = '目前 5 小時 session 用量';
-      if (u) t += `\n約 ${this.fmtTok(u.window_tokens)} billable tokens（input + cache 建立 + output，本機估算）`;
-      if (p && p.five_hour) t += `\n帳號實際 ${p.five_hour.pct}%${this.resetHint(p.five_hour)}`;
-      else t += '\n（無法取得帳號實際 %，百分比為對預算的本機估算）';
+      let t = 'Current 5-hour session usage';
+      if (u) t += `\n~${this.fmtTok(u.window_tokens)} billable tokens (input + cache write + output, local estimate)`;
+      if (p && p.five_hour) t += `\nAccount actual ${p.five_hour.pct}%${this.resetHint(p.five_hour)}`;
+      else t += "\n(Can't read account actual % — percentage is a local estimate vs budget)";
       return t;
     },
 
@@ -911,37 +921,37 @@ function fleet() {
 
     wakeupHeadline(pw) {
       if (!pw) return '';
-      const label = pw.kind === 'gpu' ? '⏳ 等 GPU' : '⏳ 定時喚醒';
+      const label = pw.kind === 'gpu' ? '⏳ GPU wait' : '⏳ scheduled wake';
       if (!pw.wake_at_ms) {
         // Background waiter: no scheduled wake time, show the poll cadence.
         const itv = pw.poll_interval_s;
         const cadence = itv
-          ? (itv >= 60 ? `背景 waiter 每 ~${Math.round(itv / 60)}m check` : `背景 waiter 每 ${itv}s check`)
-          : '背景 waiter 監控中';
+          ? (itv >= 60 ? `bg waiter checks every ~${Math.round(itv / 60)}m` : `bg waiter checks every ${itv}s`)
+          : 'bg waiter monitoring';
         return `${label} · ${cadence}`;
       }
       const hhmm = new Date(pw.wake_at_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const mins = Math.round((pw.wake_at_ms - this.nowTick) / 60000);
-      if (pw.overdue) return `${label} · 原定 ${hhmm}，已過期 ${Math.max(1, -mins)}m`;
-      if (mins <= 0) return `${label} · 下次check ${hhmm}（即將喚醒）`;
-      return `${label} · 下次check ${hhmm}（約 ${mins}m 後）`;
+      if (pw.overdue) return `${label} · due ${hhmm}, overdue ${Math.max(1, -mins)}m`;
+      if (mins <= 0) return `${label} · next check ${hhmm} (waking soon)`;
+      return `${label} · next check ${hhmm} (~${mins}m)`;
     },
 
     fmtAgo(s) {
       if (s == null) return '';
-      if (s < 60) return `${s}s 前`;
-      if (s < 3600) return `${Math.floor(s / 60)}m 前`;
-      return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m 前`;
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m ago`;
     },
 
     codexHeadline(cr) {
       if (!cr) return '';
       const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
       const elapsed = fmt(cr.elapsed_s || 0);
-      if (cr.stalled) return `🔍 Codex 審查疑似卡死 · 已 ${elapsed} · 輸出停滯 ${fmt(cr.silent_s || 0)}`;
-      if (cr.source === 'mcp') return `🔍 Codex 審查中（MCP）· 已 ${elapsed} · 無即時輸出`;
-      const silent = cr.silent_s != null ? ` · 最後輸出 ${fmt(cr.silent_s)} 前` : '';
-      return `🔍 Codex 審查中 · 已 ${elapsed}${silent}`;
+      if (cr.stalled) return `🔍 Codex review looks stalled · ${elapsed} elapsed · output silent ${fmt(cr.silent_s || 0)}`;
+      if (cr.source === 'mcp') return `🔍 Codex reviewing (MCP) · ${elapsed} elapsed · no live output`;
+      const silent = cr.silent_s != null ? ` · last output ${fmt(cr.silent_s)} ago` : '';
+      return `🔍 Codex reviewing · ${elapsed} elapsed${silent}`;
     },
 
     workflowHeadline(wf) {
@@ -949,8 +959,8 @@ function fleet() {
       const fmt = s => s >= 3600 ? `${Math.floor(s/3600)}h${Math.floor((s%3600)/60)}m` : `${Math.floor(s/60)}m`;
       const elapsed = fmt(wf.elapsed_s || 0);
       const prog = wf.agents_started ? ` · agents ${wf.agents_done || 0}/${wf.agents_started}` : '';
-      if (wf.stalled) return `⚙️ Workflow ${wf.name} 疑似卡死 · 已 ${elapsed}${prog} · 無新輸出 ${fmt(wf.silent_s || 0)}`;
-      return `⚙️ Workflow ${wf.name} 執行中 · 已 ${elapsed}${prog}`;
+      if (wf.stalled) return `⚙️ Workflow ${wf.name} looks stalled · ${elapsed} elapsed${prog} · no new output ${fmt(wf.silent_s || 0)}`;
+      return `⚙️ Workflow ${wf.name} running · ${elapsed} elapsed${prog}`;
     },
 
     async focusWindow(pid) {
@@ -1071,6 +1081,29 @@ function fleet() {
       this.historySessions = d.sessions || [];
       this.historyTotal = d.total || 0;
       this.historyPage = d.page || 1;
+    },
+
+    async openRemoteTimeline(w) {
+      // Lab session: SSH-fetch the full remote transcript on demand (a couple
+      // seconds). Falls back to the mirrored tail server-side if the host is down.
+      this.expandedPid = null;
+      this.expandedHistoryId = w.session_id;
+      this.planData = null;
+      this.timelineData = { project_slug: w.host, session_id: w.session_id, events: [], loading: true };
+      this.toast('Fetching full transcript from ' + w.host + '…');
+      try {
+        const r = await fetch(`/api/windows/${w.pid}/remote-timeline`);
+        if (r.ok) {
+          this.timelineData = await r.json();
+          this.$nextTick(() => this.$refs.timelinePanel?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+        } else {
+          this.toast('Could not fetch remote transcript (host unreachable?)');
+          this.timelineData = null; this.expandedHistoryId = null;
+        }
+      } catch (e) {
+        this.toast('Remote timeline error: ' + e.message);
+        this.timelineData = null; this.expandedHistoryId = null;
+      }
     },
 
     async openHistoryTimeline(sessionId) {

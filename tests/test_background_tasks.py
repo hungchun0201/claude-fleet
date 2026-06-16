@@ -288,7 +288,7 @@ def test_classify_active_bg_tasks_beat_completed(tmp_path):
     }
     tri = classify(w)
     assert tri["triage"] == "working"
-    assert "背景任務" in tri["reason"]
+    assert "2 background tasks running" in tri["reason"]
     assert "Disk usage breakdown of project" in tri["reason"]
 
 
@@ -316,5 +316,5 @@ def test_classify_background_gpu_waiter_is_working():
     }
     tri = classify(w)
     assert tri["triage"] == "working"
-    assert "等 GPU" in tri["reason"]
-    assert "每 ~3m 檢查" in tri["reason"]
+    assert "Waiting on GPU" in tri["reason"]
+    assert "checks every ~3m" in tri["reason"]

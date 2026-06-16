@@ -198,9 +198,53 @@ def test_active_workflow_run_missing_dir(tmp_path):
 
 
 @pytest.mark.unit
+def test_active_workflow_run_skip_progress(tmp_path):
+    # read_progress=False reports the run but never reads the local run dir,
+    # even when it exists with progress — used for remote sessions whose dir
+    # lives on another box.
+    wf_dir = _make_wf_dir(tmp_path, started=3, done=2)
+    p = _write(tmp_path, [_wf_use("toolu_w"), _wf_ack("toolu_w", wf_dir=str(wf_dir))])
+    tasks = extract_background_tasks(p)
+    run = active_workflow_run(tasks, read_progress=False)
+    assert run["agents_started"] is None
+    assert run["agents_done"] is None
+    assert run["stalled"] is False
+    assert run["name"] == "review-crosscheck"
+    # Sanity: the same dir IS read when progress is requested.
+    assert active_workflow_run(tasks)["agents_started"] == 3
+
+
+@pytest.mark.unit
 def test_active_workflow_run_none():
     assert active_workflow_run([]) is None
     assert active_workflow_run([{"type": "bash_bg", "is_gpu": True}]) is None
+
+
+@pytest.mark.unit
+def test_enrich_remote_surfaces_live_workflow(tmp_path):
+    # THE remote regression: a lab session whose turn ended (end_turn) right
+    # after launching a Workflow must read "working" on its card, not
+    # "completed". Progress is skipped (run dir is on the remote box), but the
+    # workflow name + the bg-task entry still surface from the mirrored tail.
+    import app
+
+    end = {"type": "assistant", "message": {
+        "role": "assistant", "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "workflow 已在背景跑，完成會叫我"}]}}
+    tp = _write(tmp_path, [_wf_use("toolu_w"), _wf_ack("toolu_w"), end])
+    rw = {"pid": 1, "name": "lab-agent-kvcache", "status": "idle",
+          "idle_seconds": 600, "updated_at": 0, "transcript_path": str(tp)}
+
+    # Sanity: the same end_turn tail WITHOUT the workflow triages "completed".
+    base = tmp_path / "base.jsonl"
+    base.write_text(json.dumps(end) + "\n")
+    assert app._enrich_remote({**rw, "transcript_path": str(base)}, None, False)["triage"] == "completed"
+
+    w = app._enrich_remote(rw, None, stale=False)
+    assert w["triage"] == "working"
+    assert w["workflow_run"]["name"] == "review-crosscheck"
+    assert w["workflow_run"]["agents_started"] is None  # remote dir not read
+    assert any(t["type"] == "workflow" for t in w["background_tasks"])
 
 
 def _end_turn_transcript(tmp_path: Path) -> str:

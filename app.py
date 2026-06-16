@@ -185,10 +185,10 @@ def _remote_status_triage(w: dict) -> dict:
     """Triage a remote session with no transcript yet — status/idle only."""
     idle = w.get("idle_seconds", 0)
     if w.get("status") == "busy" and idle < patrol.IDLE_THRESHOLD:
-        return {"triage": "working", "reason": "工作中", "suggestion": ""}
+        return {"triage": "working", "reason": "Working", "suggestion": ""}
     if idle >= patrol.CLOSEABLE_THRESHOLD:
-        return {"triage": "closeable", "reason": f"閒置 {idle // 60}m", "suggestion": "可關閉"}
-    return {"triage": "completed", "reason": f"閒置 {idle // 60}m", "suggestion": ""}
+        return {"triage": "closeable", "reason": f"Idle {idle // 60}m", "suggestion": "Safe to close"}
+    return {"triage": "completed", "reason": f"Idle {idle // 60}m", "suggestion": ""}
 
 
 def _enrich_remote(rw: dict, vs_info: dict | None, stale: bool) -> dict:
@@ -209,14 +209,40 @@ def _enrich_remote(rw: dict, vs_info: dict | None, stale: bool) -> dict:
         w["usage"] = transcripts.last_usage_and_model(tp)
         w["skills_used"] = transcripts.extract_skills_used(tp)
         w["memory_ops"] = transcripts.extract_memory_ops(tp)
+        # claude-lab runs Claude as a bridge session, which freezes the
+        # session-file updatedAt while the transcript keeps growing — so idle
+        # (from updatedAt) climbs on a live session and it looks untracked.
+        # Trust whichever activity signal is more recent (smaller idle).
+        ev_ms = transcripts.last_event_ms(tp)
+        if ev_ms:
+            w["idle_seconds"] = max(0, min(w.get("idle_seconds", 0),
+                                           int(time.time() - ev_ms / 1000)))
+        # Background work (Workflow / ultracode fan-outs, bg Bash, Monitor) is
+        # detected purely from the mirrored transcript tail, so it surfaces on
+        # remote cards too. Without this a lab session whose turn ended right
+        # after launching a Workflow reads "completed" while its agents run.
+        # The run dir lives on the remote box (unreadable here), so skip local
+        # progress — the run's name + elapsed still show, never a false stall.
+        w["background_tasks"] = transcripts.extract_background_tasks(tp)
+        w["workflow_run"] = transcripts.active_workflow_run(w["background_tasks"], read_progress=False)
+        # A ScheduleWakeup sleep or a GPU background waiter is also detected
+        # purely from the mirrored tail, so a lab session sleeping until a wake
+        # time reads "working", not "completed" (and never "closeable" while it
+        # is about to auto-resume). Only the last_poll decoration (_attach_last_poll,
+        # local-loop only) reads local files, so that is the sole part skipped here.
+        w["pending_wakeup"] = (
+            transcripts.extract_pending_wakeup(tp)
+            or transcripts.gpu_wait_from_background(w["background_tasks"])
+        )
     else:
-        w.update(current_task=None, last_user_input=None, usage=None, skills_used=[], memory_ops=[])
+        w.update(current_task=None, last_user_input=None, usage=None, skills_used=[],
+                 memory_ops=[], background_tasks=[], workflow_run=None, pending_wakeup=None)
     # Only a transcript tail is mirrored for remote sessions, so a cumulative
     # cost would undercount — skip it.
     w["cost"] = None
-    # Fields the local enrichment sets that don't apply to a remote session.
-    w.update(permission_msg=None, permission_ts=None, background_tasks=[],
-             workflow_run=None, pending_wakeup=None, codex_review=None, first_input=None)
+    # codex_review needs local pids/rollouts/marker, which a remote session
+    # can't supply; permission / first_input are local-only too.
+    w.update(permission_msg=None, permission_ts=None, codex_review=None, first_input=None)
     tri = patrol.classify(w) if tp else _remote_status_triage(w)
     w["triage"], w["triage_reason"], w["triage_suggestion"] = tri["triage"], tri["reason"], tri["suggestion"]
     return w
@@ -251,6 +277,13 @@ def _enriched_snapshot() -> dict:
                 w["first_input"] = first
         if tp:
             w["current_task"] = transcripts.current_task_hint(tp)
+            # Bridge/SDK sessions freeze the session-file updatedAt; trust the
+            # transcript's newest row when it is more recent, so a live session's
+            # idle clock (and time-driven triage) doesn't drift to "completed".
+            ev_ms = transcripts.last_event_ms(tp)
+            if ev_ms:
+                w["idle_seconds"] = max(0, min(w.get("idle_seconds", 0),
+                                               int(time.time() - ev_ms / 1000)))
             w["background_tasks"] = transcripts.extract_background_tasks(tp)
             w["workflow_run"] = transcripts.active_workflow_run(w["background_tasks"])
             # Sleeping on a ScheduleWakeup wins (it has a concrete wake time);
@@ -396,6 +429,34 @@ def api_timeline(pid: int, limit: int = 2000) -> dict:
     }
 
 
+@app.get("/api/windows/{pid}/remote-timeline")
+def api_remote_timeline(pid: int, limit: int = 5000) -> dict:
+    """Full timeline for a remote (lab) session: SSH-fetch the complete remote
+    transcript on demand. Falls back to the locally-mirrored 60KB tail (flagged
+    partial) when the host is unreachable, so the panel still shows something."""
+    rw = next((w for w in _lab_cache["windows"] if w.get("pid") == pid), None)
+    if not rw:
+        raise HTTPException(404, "remote session not found")
+    sid = rw.get("session_id")
+    fp = remote.fetch_full_transcript(rw.get("host"), rw.get("cwd"), sid)
+    partial = False
+    if not fp:
+        fp = rw.get("transcript_path")  # the mirrored tail
+        partial = True
+    if not fp or not Path(fp).exists():
+        raise HTTPException(502, "could not fetch remote transcript")
+    return {
+        "session_id": sid,
+        "project_slug": rw.get("host"),
+        "events": transcripts.timeline(fp, limit=limit),
+        "platform": "claude",
+        "partial": partial,
+        "skills_used": transcripts.extract_skills_used(fp),
+        "memory_ops": transcripts.extract_memory_ops(fp),
+        "plan_history": transcripts.extract_plan_history(fp),
+    }
+
+
 @app.get("/api/windows/{pid}/plan")
 def api_plan(pid: int) -> dict:
     w = sessions.find_window(pid)
@@ -436,7 +497,7 @@ def api_focus(pid: int) -> dict:
             if not att:
                 suffix = (rw.get("name") or "").removeprefix("lab-")
                 return {"ok": False, "detached": True,
-                        "error": f"沒有本機終端附著（tmux 仍在 {rw.get('host')} 上）— 在 VSCode 執行 `claude-lab {suffix}` 重新附著"}
+                        "error": f"No local terminal attached (tmux still on {rw.get('host')}) — run `claude-lab {suffix}` in VS Code to reattach"}
             return vscode.focus(att) or {"ok": False, "error": "attached terminal is not a VS Code terminal"}
 
     w = sessions.find_window(pid)

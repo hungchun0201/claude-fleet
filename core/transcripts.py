@@ -201,6 +201,26 @@ def current_task_hint(path: str | Path) -> Optional[str]:
     return None
 
 
+def last_event_ms(path: str | Path) -> Optional[int]:
+    """Epoch-ms of the newest timestamped row in the transcript tail, or None.
+
+    The session file's `updatedAt` is the usual activity signal, but bridge /
+    SDK sessions (claude-lab, agent bridges) don't refresh it per turn — it
+    freezes while the transcript keeps growing. The transcript's own row
+    timestamps are then the truthful "last active" signal, so callers can take
+    the more recent of the two and not let a live session's idle clock drift.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    latest = 0
+    for d in _tail_lines(p, 60):
+        ms = _parse_ts_ms(d.get("timestamp") or "")
+        if ms:
+            latest = max(latest, ms)
+    return latest or None
+
+
 # User messages also carry injected noise (tool results, slash-command output,
 # system reminders, task notifications). A message that *starts* with one of
 # these is not something the user typed.
@@ -344,7 +364,7 @@ def last_usage_and_model(path: str | Path) -> Optional[dict]:
     Reads only the transcript tail. Returns the most recent *real* assistant
     turn's model and a token breakdown:
       - context_tokens: input + cache_read + cache_creation of that turn — how
-        full the context window currently is ("目前使用的 token 數量").
+        full the context window currently is (tokens currently in use).
       - out_tokens: output tokens of that turn.
     Synthetic rows (model "<synthetic>", e.g. API-error notices) carry no real
     model or usage and are skipped.
@@ -542,13 +562,15 @@ def extract_memory_ops(path: str | Path) -> list[dict]:
 
 
 # Heuristic: does this text describe waiting on GPU jobs (Slurm tooling /
-# specific GPU SKUs)? Used to tag the card "等 GPU". Custom boundaries treat
-# '-' and '/' as word characters so identifiers like a branch named
+# specific GPU SKUs)? Used to tag the card as a GPU wait. Custom boundaries
+# treat '-' and '/' as word characters so identifiers like a branch named
 # feat/gpu-wait-tag or a file called h100-jitter.json never match — only
-# free-standing words ("squeue", "L40S jobs", "等 GPU") do.
+# free-standing words ("squeue", "L40S jobs", and the Chinese "等 GPU") do.
+# The Chinese "等 gpu" alternative below stays so monitored sessions written
+# in Chinese still get tagged; it is matched in their commands, not shown.
 # Deliberately NOT in the list: the bare hostname "pace" — every remote chore
-# (du scans, quota checks, rsync) runs over `ssh pace`, and tagging those
-# 等GPU is wrong. A real GPU wait always carries a Slurm/GPU token.
+# (du scans, quota checks, rsync) runs over `ssh pace`, and tagging those as a
+# GPU wait is wrong. A real GPU wait always carries a Slurm/GPU token.
 _GPU_WAIT_RE = re.compile(
     r"(?<![\w/-])(?:gpu|slurm|squeue|sbatch|salloc|scancel|sacct|h100|h200|l40s?|a100|v100|cuda|vllm)(?![\w/-])"
     r"|(?<![\w/-])rtx\s*\d{3,4}(?![\w/-])"
@@ -989,13 +1011,18 @@ def _workflow_dir_progress(d: Path) -> Optional[dict]:
     }
 
 
-def active_workflow_run(tasks: list[dict]) -> Optional[dict]:
+def active_workflow_run(tasks: list[dict], read_progress: bool = True) -> Optional[dict]:
     """Most recent active Workflow run, enriched with live journal progress.
 
     A workflow runs in the background while the main turn usually ends —
     without this signal the session would triage as "completed" even with
     dozens of agents still working. Stalled = no file writes in the run dir
     for _WORKFLOW_STALL_THRESHOLD_S.
+
+    `read_progress=False` reports the run from the transcript alone (name +
+    elapsed) without touching the local filesystem — used for remote sessions
+    whose run dir lives on another box, so a local same-path dir can't be
+    mistaken for this run's journal (and we never falsely flag it stalled).
     """
     for t in reversed(tasks or []):
         if t.get("type") != "workflow":
@@ -1015,7 +1042,7 @@ def active_workflow_run(tasks: list[dict]) -> Optional[dict]:
             "stalled": False,
         }
         wf_dir = t.get("workflow_dir")
-        if wf_dir:
+        if wf_dir and read_progress:
             prog = _workflow_dir_progress(Path(wf_dir))
             if prog:
                 run.update(prog)
