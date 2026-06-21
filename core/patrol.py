@@ -303,6 +303,12 @@ def _format_idle(seconds: int) -> str:
         return f"{seconds}s"
     if seconds < 3600:
         return f"{seconds // 60}m"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    return f"{h}h{m}m" if m else f"{h}h"
+    if seconds < 86400:
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        return f"{h}h{m}m" if m else f"{h}h"
+    # Past a day, switch to day+hour granularity ("2d 3h") instead of letting the
+    # hour count run unbounded ("51h") — easier to read at a glance on stale cards.
+    d = seconds // 86400
+    h = (seconds % 86400) // 3600
+    return f"{d}d {h}h" if h else f"{d}d"
