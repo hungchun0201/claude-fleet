@@ -396,6 +396,25 @@ def test_normal_workflow_with_tool_use_not_double_counted(tmp_path):
 
 
 @pytest.mark.unit
+def test_echoed_workflow_ack_not_recovered(tmp_path):
+    # Regression: a Bash/other tool whose OUTPUT contains workflow-ack-shaped
+    # text (e.g. catting/printing an ack while debugging) must NOT be mistaken
+    # for a launched workflow — its producing tool_use is visible, so the run
+    # never genuinely scrolled out. (This false-positived a session that merely
+    # printed the ack text during development.)
+    bash_use = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": "toolu_b", "name": "Bash",
+            "input": {"command": "cat /tmp/ack.txt"},
+        }]},
+    }
+    echoed = _workflow_ack("toolu_b")  # same id → this is the Bash's own output
+    p = _write(tmp_path, [bash_use, echoed])
+    assert extract_background_tasks(p) == []
+
+
+@pytest.mark.unit
 def test_classify_orphaned_workflow_is_working(tmp_path):
     # The end-to-end regression: ack-only transcript + ended turn → working.
     p = _write(tmp_path, [_workflow_ack("toolu_gone")])

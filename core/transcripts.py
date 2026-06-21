@@ -828,6 +828,7 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
     stopped_tasks: set[str] = set()     # harness task ids killed via TaskStop
     ack_by_use: dict[str, str] = {}     # tool_use_id -> harness task id
     plain_result_ids: set[str] = set()  # tool_use_ids with a non-ack result
+    seen_tool_use_ids: set[str] = set()  # every tool_use id seen, any tool
     notif_texts: list[str] = []
 
     for d in _iter_lines(p):
@@ -839,6 +840,8 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                 name = c.get("name", "")
                 inp = c.get("input") or {}
                 tid = c.get("id", "")
+                if tid:
+                    seen_tool_use_ids.add(tid)
                 if name == "Workflow" and tid:
                     # Workflows always run in background; same ack/notification
                     # lifecycle as bg Bash. Description comes from the ack's
@@ -966,10 +969,15 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
     # sessions only mirror the last N bytes) while its spawn-ack — and the run
     # itself — are still live. The ack alone identifies the run, so recover it;
     # without this the session falsely reads "completed" while agents still work.
-    # False positives are impossible: a completion <task-notification> always
-    # follows the ack in the file, so if the ack survived in the tail its
-    # notification did too — and resolved_task_ids below catches it.
-    orphans = [tu for tu in ack_by_use if tu not in bg_uses]
+    #
+    # Gate on the tool_use being GENUINELY ABSENT (scrolled out), not merely
+    # "not a tracked bg task". Otherwise ack-shaped text that some *other* tool
+    # emitted — e.g. a Bash that cats/echoes a workflow ack while debugging —
+    # would be mistaken for a launched workflow, since its (visible) Bash
+    # tool_use is the one that produced the text. A completion notification, if
+    # any, is also in the tail (it follows the ack), so resolved_task_ids holds.
+    orphans = [tu for tu in ack_by_use
+               if tu not in bg_uses and tu not in seen_tool_use_ids]
     if orphans:
         resolved_task_ids: set[str] = set()
         for ft in notif_texts:
