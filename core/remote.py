@@ -23,7 +23,14 @@ from typing import Optional
 # Hosts to track. Override with CLAUDE_FLEET_REMOTE_HOSTS="lab,other" (ssh aliases).
 DEFAULT_HOSTS = ["lab"]
 SSH_TIMEOUT_S = 25
-TRANSCRIPT_TAIL_BYTES = 60000
+# Mirror a generous tail so recent context (current task, last input, usage,
+# background tasks, a Workflow launch) survives even on multi-MB transcripts.
+# 60KB was far too small — it dropped a Workflow's tool_use while the run was
+# still live, mislabelling the session "completed". Parsing ~7 extractors over a
+# 2MB tail measures ~13ms, and tail-fetching is one SSH round-trip every 8s, so
+# this stays cheap. extract_background_tasks also recovers a workflow from its
+# spawn-ack alone, so correctness no longer depends on the run fitting here.
+TRANSCRIPT_TAIL_BYTES = 2_000_000
 
 _TMP_ROOT = Path("/tmp/claude-fleet-remote")
 

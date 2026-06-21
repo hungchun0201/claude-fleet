@@ -770,6 +770,7 @@ _BG_OUTPUT_FILE_RE = re.compile(r"Output is being written to:\s*(\S+)")
 _WF_ACK_DIR_RE = re.compile(r"Transcript dir:\s*(\S+)")
 _WF_ACK_SUMMARY_RE = re.compile(r"Summary:\s*([^\n]+)")
 _WF_ACK_RUN_ID_RE = re.compile(r"Run ID:\s*(wf_[a-z0-9-]+)")
+_WF_ACK_SCRIPT_RE = re.compile(r"Script file:\s*(\S+)")
 # meta.name from an inline script. `export const meta = {...}` is required to
 # be the first statement, so the first name: in the text is meta's.
 _WF_META_NAME_RE = re.compile(r"\bname:\s*['\"]([^'\"\n]{1,80})['\"]")
@@ -787,6 +788,13 @@ def _result_text(c: dict) -> str:
     return str(cv or "")
 
 
+def _wf_name_from_script_path(sp: str) -> str:
+    """Workflow name from a persisted script path. Scripts are named
+    <meta-name>-<run-id>.js, so strip the trailing run id off the stem."""
+    stem = sp.rsplit("/", 1)[-1].removesuffix(".js")
+    return re.sub(r"-wf_[a-z0-9-]+$", "", stem)[:80]
+
+
 def _workflow_name_from_input(inp: dict) -> str:
     """Best-effort workflow name: explicit name > script meta > scriptPath stem."""
     name = str(inp.get("name") or "")
@@ -797,9 +805,7 @@ def _workflow_name_from_input(inp: dict) -> str:
         return m.group(1)
     sp = str(inp.get("scriptPath") or "")
     if sp:
-        stem = sp.rsplit("/", 1)[-1].removesuffix(".js")
-        # Persisted scripts are named <meta-name>-<run-id>.js
-        return re.sub(r"-wf_[a-z0-9-]+$", "", stem)[:80]
+        return _wf_name_from_script_path(sp)
     return ""
 
 
@@ -895,12 +901,17 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
                         dir_m = _WF_ACK_DIR_RE.search(txt)
                         sum_m = _WF_ACK_SUMMARY_RE.search(txt)
                         run_m = _WF_ACK_RUN_ID_RE.search(txt)
+                        scr_m = _WF_ACK_SCRIPT_RE.search(txt)
                         ack_by_use.setdefault(tu, {
                             "task_id": id_m.group(1),
                             "output_file": out_m.group(1).rstrip(".") if out_m else None,
                             "workflow_dir": dir_m.group(1) if dir_m else None,
                             "summary": sum_m.group(1).strip() if sum_m else None,
                             "run_id": run_m.group(1) if run_m else None,
+                            # Kept so a Workflow whose tool_use scrolled out of a
+                            # mirrored tail can still be recovered (name + when).
+                            "workflow_name": _wf_name_from_script_path(scr_m.group(1)) if scr_m else "",
+                            "ts": d.get("timestamp") or "",
                         })
                     else:
                         plain_result_ids.add(tu)
@@ -950,6 +961,43 @@ def extract_background_tasks(path: str | Path) -> list[dict]:
         if tu not in ack_by_use and tu in plain_result_ids:
             continue
         out.append(task)
+
+    # A Workflow's tool_use can scroll out of a mirrored transcript tail (remote
+    # sessions only mirror the last N bytes) while its spawn-ack — and the run
+    # itself — are still live. The ack alone identifies the run, so recover it;
+    # without this the session falsely reads "completed" while agents still work.
+    # False positives are impossible: a completion <task-notification> always
+    # follows the ack in the file, so if the ack survived in the tail its
+    # notification did too — and resolved_task_ids below catches it.
+    orphans = [tu for tu in ack_by_use if tu not in bg_uses]
+    if orphans:
+        resolved_task_ids: set[str] = set()
+        for ft in notif_texts:
+            resolved_task_ids.update(_TASK_NOTIF_TASK_ID_RE.findall(ft))
+        for tu in orphans:
+            ack = ack_by_use[tu]
+            # Only Workflow acks carry a run dir / run id; an orphaned bash-bg
+            # ack resolves differently and is left alone.
+            if not (ack.get("workflow_dir") or ack.get("run_id")):
+                continue
+            tid = ack.get("task_id")
+            if tid and (tid in resolved_task_ids or tid in stopped_tasks):
+                continue
+            out.append({
+                "type": "workflow",
+                "description": (ack.get("summary") or "")[:200],
+                "command": "",
+                "started_ts": ack.get("ts") or "",
+                "task_id": tid,
+                "output_file": ack.get("output_file"),
+                "poll_interval_s": None,
+                "ssh_host": None,
+                "job_ids": [],
+                "is_gpu": False,
+                "workflow_name": ack.get("workflow_name") or "",
+                "workflow_dir": ack.get("workflow_dir"),
+                "run_id": ack.get("run_id"),
+            })
     return out
 
 

@@ -307,6 +307,108 @@ def test_classify_prose_mentioning_background_is_not_working(tmp_path):
     assert classify(w)["triage"] == "completed"
 
 
+# --- Workflow recovery from an orphaned spawn-ack ---------------------------
+# A long-running Workflow's tool_use can scroll out of a mirrored transcript
+# tail (remote/lab cards only mirror the last N bytes) while the run is still
+# live. The spawn-ack alone must keep the session reading "working", not
+# "completed". Mirrors the live lab-kvoffloading-vllm bug.
+
+def _workflow_use(tool_use_id: str, name: str = "vllm-kv-offload-research",
+                  ts: str = "2026-06-20T22:00:00.000Z") -> dict:
+    return {
+        "type": "assistant", "timestamp": ts,
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": tool_use_id, "name": "Workflow",
+            "input": {"name": name},
+        }]},
+    }
+
+
+def _workflow_ack(tool_use_id: str, task_id: str = "wpaoxypnr",
+                  run_id: str = "wf_f6a8c4c7-e0b",
+                  name: str = "vllm-kv-offload-research",
+                  ts: str = "2026-06-20T22:00:01.000Z") -> dict:
+    # Real Workflow ack shape: only "launched in background" + "will be notified"
+    # — no "running in background" — plus Task ID / Transcript dir / Script file.
+    txt = (f"Workflow launched in background. Task ID: {task_id}\n"
+           f"Summary: Exhaustive research report on vLLM native KV offloading\n"
+           f"Transcript dir: /home/u/.claude/projects/p/subagents/workflows/{run_id}\n"
+           f"Script file: /home/u/.claude/projects/p/workflows/scripts/{name}-{run_id}.js\n"
+           f"Run ID: {run_id}\n\nYou will be notified when it completes.")
+    return {
+        "type": "user", "timestamp": ts,
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_use_id, "content": txt},
+        ]},
+    }
+
+
+@pytest.mark.unit
+def test_orphaned_workflow_ack_recovered(tmp_path):
+    # Only the ack survived the tail (no tool_use) — must still be an active run.
+    p = _write(tmp_path, [_workflow_ack("toolu_gone")])
+    tasks = extract_background_tasks(p)
+    assert len(tasks) == 1
+    t = tasks[0]
+    assert t["type"] == "workflow"
+    assert t["task_id"] == "wpaoxypnr"
+    assert t["run_id"] == "wf_f6a8c4c7-e0b"
+    assert t["workflow_name"] == "vllm-kv-offload-research"
+
+
+@pytest.mark.unit
+def test_orphaned_workflow_ack_resolved_by_notification(tmp_path):
+    # If the ack is in the tail, its later completion notification is too — so a
+    # finished workflow is never falsely recovered as active.
+    notif = _user_notif("wpaoxypnr", "toolu_gone")
+    p = _write(tmp_path, [_workflow_ack("toolu_gone"), notif])
+    assert extract_background_tasks(p) == []
+
+
+@pytest.mark.unit
+def test_orphaned_workflow_ack_resolved_by_taskstop(tmp_path):
+    stop = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": "toolu_s", "name": "TaskStop",
+            "input": {"task_id": "wpaoxypnr"},
+        }]},
+    }
+    p = _write(tmp_path, [_workflow_ack("toolu_gone"), stop])
+    assert extract_background_tasks(p) == []
+
+
+@pytest.mark.unit
+def test_orphaned_bash_ack_not_recovered(tmp_path):
+    # A plain bg-Bash ack with no tool_use (no run dir / run id) is left alone —
+    # only Workflow acks are recovered.
+    p = _write(tmp_path, [_ack("toolu_gone", "btask1")])
+    assert extract_background_tasks(p) == []
+
+
+@pytest.mark.unit
+def test_normal_workflow_with_tool_use_not_double_counted(tmp_path):
+    # tool_use present → handled normally; the orphan pass must not re-add it.
+    p = _write(tmp_path, [_workflow_use("toolu_w"), _workflow_ack("toolu_w")])
+    tasks = extract_background_tasks(p)
+    assert len(tasks) == 1
+    assert tasks[0]["workflow_name"] == "vllm-kv-offload-research"
+
+
+@pytest.mark.unit
+def test_classify_orphaned_workflow_is_working(tmp_path):
+    # The end-to-end regression: ack-only transcript + ended turn → working.
+    p = _write(tmp_path, [_workflow_ack("toolu_gone")])
+    from core.transcripts import active_workflow_run
+    tasks = extract_background_tasks(p)
+    w = {"status": "busy", "idle_seconds": 1000, "name": "s",
+         "transcript_path": str(p), "background_tasks": tasks,
+         "workflow_run": active_workflow_run(tasks, read_progress=False)}
+    tri = classify(w)
+    assert tri["triage"] == "working"
+    assert "vllm-kv-offload-research" in tri["reason"]
+
+
 @pytest.mark.unit
 def test_classify_background_gpu_waiter_is_working():
     w = {
