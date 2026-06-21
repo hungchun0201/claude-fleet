@@ -7,7 +7,14 @@ integrated terminal, the dashboard writes that terminal's shell PID to
 `vscode.window.terminals[].processId` and calls `terminal.show()` to bring the
 right terminal tab to the front.
 
-No configuration, no ports — it just watches that one file.
+It also handles **Reattach**: when you reattach a detached lab session, the
+dashboard appends a job to `~/.config/claude-fleet/vscode-reattach`. This
+extension, running in your **most-recently-focused** window (it records that in
+`vscode-lastfocus` on focus), opens a new terminal there and runs
+`claude-lab <suffix>` — so the terminal lands in the window you're already in,
+not a new one. An exclusive marker file makes each job run exactly once.
+
+No configuration, no ports — it just watches those files.
 
 ## Install
 

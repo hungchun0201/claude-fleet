@@ -9,8 +9,9 @@ import pytest
 from core import remote
 
 
-def _block(obj: dict, transcript: str = "") -> str:
+def _block(obj: dict, transcript: str = "", tmux: str = "?") -> str:
     return (f"{remote._SEP_SESSION}\n{json.dumps(obj)}\n"
+            f"{remote._SEP_TMUX}\n{tmux}\n"
             f"{remote._SEP_TRANSCRIPT}\n{transcript}\n{remote._SEP_END}\n")
 
 
@@ -44,7 +45,54 @@ def test_parse_no_transcript_when_tail_empty():
 
 
 @pytest.mark.unit
-def test_local_attachment_pid_matches_claude_lab():
+def test_parse_tmux_attached_flag():
+    base = {"sessionId": "a", "cwd": "/home/h/x", "status": "idle", "updatedAt": 1}
+    stream = (
+        _block({**base, "pid": 1, "name": "lab-att"}, tmux="1")
+        + _block({**base, "pid": 2, "name": "lab-det"}, tmux="0")
+        + _block({**base, "pid": 3, "name": "lab-unk"}, tmux="?")
+    )
+    by = {w["name"]: w for w in remote._parse("lab", stream)}
+    assert by["lab-att"]["tmux_attached"] is True
+    assert by["lab-det"]["tmux_attached"] is False
+    assert by["lab-unk"]["tmux_attached"] is None
+
+
+@pytest.mark.unit
+def test_parse_old_stream_without_tmux_marker():
+    # Backward compatibility: a stream with no SEP_TMUX segment still parses, with
+    # tmux_attached unknown (None) and the transcript intact.
+    old = (f"{remote._SEP_SESSION}\n"
+           f"{json.dumps({'pid': 1, 'sessionId': 'a', 'cwd': '/h/x', 'name': 'lab-foo', 'status': 'idle', 'updatedAt': 1})}\n"
+           f"{remote._SEP_TRANSCRIPT}\n"
+           '{"type":"user"}\n'
+           f"{remote._SEP_END}\n")
+    out = remote._parse("lab", old)
+    assert len(out) == 1 and out[0]["name"] == "lab-foo"
+    assert out[0]["tmux_attached"] is None
+    assert out[0]["transcript_path"] is not None
+
+
+@pytest.mark.unit
+def test_parse_marker_literals_in_content_do_not_drop_session():
+    # Regression: a lab session editing THIS repo has the marker literals in its
+    # cwd/transcript. Whole-line markers mean a substring occurrence must not
+    # mis-split the block (the old substring-partition silently dropped it).
+    cwd = "/home/h/<<<FLEET-TMUX>>>-repo"
+    transcript = '{"type":"user","text":"see <<<FLEET-TRANSCRIPT>>> then <<<FLEET-END>>>"}'
+    stream = _block({"pid": 7, "sessionId": "z", "cwd": cwd, "name": "lab-z",
+                     "status": "idle", "updatedAt": 1},
+                    transcript=transcript, tmux="1")
+    out = remote._parse("lab", stream)
+    assert len(out) == 1
+    w = out[0]
+    assert w["name"] == "lab-z" and w["cwd"] == cwd       # JSON intact
+    assert w["tmux_attached"] is True                      # real flag, not content
+    assert w["transcript_path"] is not None                # transcript preserved
+
+
+@pytest.mark.unit
+def test_local_attachment_pid_matches_handle_not_dir_arg():
     ps = {
         6408: (3900, "ssh lab -t /home/hclin/.local/bin/claude-lab testttt"),
         3900: (920, "/bin/zsh -il"),
@@ -54,6 +102,31 @@ def test_local_attachment_pid_matches_claude_lab():
     assert remote.local_attachment_pid("lab-nope", ps) is None
     assert remote.local_attachment_pid(None, ps) is None
     assert remote.local_attachment_pid("not-lab-prefixed", ps) is None
+    # arg2 is a directory, NOT the handle: a same-named dir must not look attached.
+    ps2 = {99: (1, "ssh lab -t /home/hclin/.local/bin/claude-lab typo real")}
+    assert remote.local_attachment_pid("lab-typo", ps2) == 99
+    assert remote.local_attachment_pid("lab-real", ps2) is None
+    # A prefix handle resolves (claude-lab agent -> lab-agent-kvcache).
+    ps3 = {77: (1, "ssh lab -t /home/hclin/.local/bin/claude-lab agent")}
+    assert remote.local_attachment_pid("lab-agent-kvcache", ps3) == 77
+
+
+@pytest.mark.unit
+def test_enrich_remote_tmux_attached_overrides_local(monkeypatch):
+    import app
+    from core import vscode
+    # The local heuristic WOULD match (a claude-lab proc for this name exists),
+    # but the remote tmux says detached -> the card must read detached.
+    vs_info = {50: (1, "ssh lab -t /x/claude-lab foo")}
+    rw = {"pid": 1, "name": "lab-foo", "status": "idle", "idle_seconds": 100,
+          "updated_at": 0, "transcript_path": None, "tmux_attached": False}
+    assert app._enrich_remote(rw, vs_info, stale=False)["attached"] is False
+    # tmux says attached -> attached even when no local terminal is resolvable.
+    rw2 = dict(rw, tmux_attached=True)
+    assert app._enrich_remote(rw2, {}, stale=False)["attached"] is True
+    # tmux unknown (None) -> fall back to the local heuristic.
+    rw3 = dict(rw, tmux_attached=None)
+    assert app._enrich_remote(rw3, vs_info, stale=False)["attached"] is True
 
 
 @pytest.mark.unit

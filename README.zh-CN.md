@@ -115,6 +115,12 @@ memory 面板依類型（user / feedback / project / reference）分組，每筆
 | Review | 背景跑 `claude -p` 審查；結論（PASS/FAIL/PARTIAL）顯示在卡片上 |
 | Close | SIGTERM（closeable 的 session）|
 | Export | 匯出對話文件（timeline + plan 歷史 + skill/memory 摘要）|
+| Reattach | 只在 **detached** 的遠端（lab）卡片上——在你目前的視窗開一個新終端，用 `claude-lab <suffix>` 重新接回還活著的 tmux |
+
+遠端（lab）session 若 tmux 還活在主機上、但本機沒有終端附著（你把終端關了），會顯示
+**detached**。**Reattach** 會在你*最近聚焦*的編輯器視窗裡開一個新終端，跑
+`claude-lab <suffix>` 把你接回正在跑的 session——由下方的 companion extension 在那個視窗
+開終端（不會另開新視窗）。
 
 > **Focus 設定（macOS）。**
 > - **Terminal.app / iTerm2**——含在 **tmux** 裡跑的 session：開箱即用。內建的 [`scripts/focus-tty.sh`](scripts/focus-tty.sh) 把行程 tty → 所屬分頁 → 提到前景；放一個可執行的 `~/.claude/focus-tty.sh`（接 `<tty>` 參數）即可自訂。
@@ -122,7 +128,7 @@ memory 面板依類型（user / feedback / project / reference）分組，每筆
 >   ```bash
 >   bash scripts/install-vscode-extension.sh
 >   ```
->   然後重載視窗（⇧⌘P → *Developer: Reload Window*，終端機會保留）。它用 shell PID 精準 focus 對的終端，並回報哪個終端是 active，讓 dashboard 近即時地把它框起來。
+>   然後重載視窗（⇧⌘P → *Developer: Reload Window*，終端機會保留）。它用 shell PID 精準 focus 對的終端、回報哪個終端是 active 讓 dashboard 近即時地把它框起來，並在你最近聚焦的視窗裡開 **Reattach** 終端。
 
 ## 隱私
 
@@ -145,7 +151,7 @@ core/
   usage.py            本機 billable-token 聚合（5h 窗口）
   plan_usage.py       透過 /api/oauth/usage 取真實帳號上限（唯讀、快取）
   shells.py           即時背景 shell 檢視（行程樹）
-  vscode.py           focus VSCode 整合終端 + 回報目前 active 的終端
+  vscode.py           focus VSCode 整合終端、回報目前 active 的終端、reattach detached 的 lab session
   codex.py            Codex session 解析 + 審查偵測
   search.py           跨平台 ripgrep 搜尋
   actions.py          focus / fork / review / close / export

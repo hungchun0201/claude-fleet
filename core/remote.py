@@ -29,11 +29,17 @@ _TMP_ROOT = Path("/tmp/claude-fleet-remote")
 
 # Delimiters the remote script emits so we can split sessions out of one stream.
 _SEP_SESSION = "<<<FLEET-SESSION>>>"
+_SEP_TMUX = "<<<FLEET-TMUX>>>"
 _SEP_TRANSCRIPT = "<<<FLEET-TRANSCRIPT>>>"
 _SEP_END = "<<<FLEET-END>>>"
 
-# Runs on the remote host: for each alive session, print its JSON then a tail of
-# its transcript, bracketed by markers. Pure POSIX sh + coreutils.
+# Runs on the remote host: for each alive session, print its JSON, then whether
+# its tmux session currently has a client attached, then a tail of its
+# transcript, bracketed by markers. Pure POSIX sh + coreutils + awk.
+#
+# "attached" comes from the session's OWN tmux (does its pane's tty belong to a
+# session with a connected client?) — authoritative even when two sessions share
+# a name, unlike guessing from the laptop's `ssh ... claude-lab` process list.
 _REMOTE_SCRIPT = r"""
 for f in "$HOME"/.claude/sessions/*.json; do
   [ -f "$f" ] || continue
@@ -42,6 +48,10 @@ for f in "$HOME"/.claude/sessions/*.json; do
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
   printf '%s\n' "__SEP_SESSION__"
   cat "$f"; printf '\n'
+  ctty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+  att=$(tmux list-panes -a -F '#{pane_tty} #{session_attached}' 2>/dev/null \
+        | awk -v t="/dev/$ctty" '$1==t{print $2; f=1} END{if(!f)print "?"}')
+  printf '%s\n%s\n' "__SEP_TMUX__" "$att"
   sid=$(sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p' "$f")
   cwd=$(sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p' "$f")
   slug=$(printf '%s' "$cwd" | sed 's#[/_.]#-#g')
@@ -63,6 +73,7 @@ def _build_script() -> str:
     return (
         _REMOTE_SCRIPT
         .replace("__SEP_SESSION__", _SEP_SESSION)
+        .replace("__SEP_TMUX__", _SEP_TMUX)
         .replace("__SEP_TRANSCRIPT__", _SEP_TRANSCRIPT)
         .replace("__SEP_END__", _SEP_END)
         .replace("__TAIL__", str(TRANSCRIPT_TAIL_BYTES))
@@ -91,24 +102,57 @@ def _cwd_slug(cwd: str) -> str:
     return cwd.replace("/", "-").replace("_", "-").replace(".", "-")
 
 
+def _session_blocks(stream: str):
+    """Yield each session's lines (everything after a bare _SEP_SESSION line, up
+    to the next one). Splitting on the whole-line marker — never a substring —
+    means a marker literal inside a JSON field or transcript line can't start a
+    spurious block."""
+    block: Optional[list[str]] = None
+    for line in stream.split("\n"):
+        if line == _SEP_SESSION:
+            if block is not None:
+                yield block
+            block = []
+        elif block is not None:
+            block.append(line)
+    if block is not None:
+        yield block
+
+
 def _parse(host: str, stream: str) -> list[dict]:
     out: list[dict] = []
     host_tmp = _TMP_ROOT / host
     host_tmp.mkdir(parents=True, exist_ok=True)
     now_ms = int(time.time() * 1000)
 
-    for block in stream.split(_SEP_SESSION):
-        block = block.strip()
-        if not block:
-            continue
-        json_part, _, rest = block.partition(_SEP_TRANSCRIPT)
-        transcript = rest.split(_SEP_END, 1)[0] if _SEP_END in rest else rest
+    for lines in _session_blocks(stream):
+        # Segment by WHOLE-LINE markers: <json> [SEP_TMUX <flag>] SEP_TRANSCRIPT
+        # <tail> SEP_END. The remote script always prints each marker on its own
+        # line, so the same literal occurring inside the JSON or the transcript
+        # tail (e.g. a lab session editing this repo) can't mis-split the block.
+        # SEP_TMUX is optional, so a pre-upgrade remote stream still parses.
+        seg = "json"
+        parts: dict[str, list[str]] = {"json": [], "tmux": [], "tx": []}
+        for line in lines:
+            if line == _SEP_TMUX:
+                seg = "tmux"
+            elif line == _SEP_TRANSCRIPT:
+                seg = "tx"
+            elif line == _SEP_END:
+                seg = "done"
+            elif seg in parts:
+                parts[seg].append(line)
         try:
-            data = json.loads(json_part.strip())
+            data = json.loads("\n".join(parts["json"]).strip())
         except Exception:
             continue
         if not isinstance(data, dict) or "sessionId" not in data:
             continue
+        transcript = "\n".join(parts["tx"])
+        # "1" attached / "0" detached / "?" or "" unknown (no tmux match -> None,
+        # so the caller falls back to the local-attachment heuristic).
+        flag = "\n".join(parts["tmux"]).strip()
+        tmux_attached = True if flag == "1" else (False if flag == "0" else None)
 
         # Only track claude-lab sessions (tmux/window named lab-*); other lab
         # claude processes (orphans, direct ssh) are noise here.
@@ -147,6 +191,7 @@ def _parse(host: str, stream: str) -> list[dict]:
             "remote": True,
             "host": host,
             "tmux": data.get("name"),  # claude-lab names the tmux session == session name
+            "tmux_attached": tmux_attached,  # authoritative attach state (None = unknown)
             "idle_seconds": max(0, int(time.time() - data.get("updatedAt", now_ms) / 1000)),
         })
     return out
@@ -218,9 +263,17 @@ def fetch_full_transcript(host: Optional[str], cwd: Optional[str],
 
 
 def local_attachment_pid(name: Optional[str], ps_info: dict) -> Optional[int]:
-    """The local pid running `claude-lab <suffix>` for a `lab-<suffix>` session,
-    i.e. the laptop terminal currently attached to that remote tmux. None when
-    no terminal is attached (the tmux still lives on the remote — "detached").
+    """The local pid running `claude-lab <handle>` for a `lab-<suffix>` session,
+    i.e. the laptop terminal whose VS Code shell we focus on a card click. None
+    when no such terminal is found.
+
+    Matches on the *handle* (the first token after the `claude-lab` binary) —
+    `claude-lab <handle> [dir]` — so a second positional arg that happens to be a
+    same-named directory can't masquerade as an attachment. The handle matches
+    when the session suffix starts with it (exact, or the prefix the lab-side
+    script's prefix-match would have resolved). Whether a terminal is *really*
+    attached is decided by the remote tmux (`tmux_attached`); this only resolves
+    which local terminal to focus.
 
     `ps_info` is vscode._ps_parents() output: {pid: (ppid, command)}.
     """
@@ -228,6 +281,15 @@ def local_attachment_pid(name: Optional[str], ps_info: dict) -> Optional[int]:
         return None
     suffix = name[len("lab-"):]
     for pid, (_ppid, cmd) in ps_info.items():
-        if "claude-lab" in cmd and (suffix in cmd.split() or name in cmd):
+        if "claude-lab" not in cmd:
+            continue
+        parts = cmd.split()
+        handle = None
+        for i, tok in enumerate(parts):
+            if "claude-lab" in tok:
+                if i + 1 < len(parts):
+                    handle = parts[i + 1]
+                break
+        if (handle and suffix.startswith(handle)) or name in parts:
             return pid
     return None

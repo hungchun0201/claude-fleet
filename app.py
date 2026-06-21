@@ -198,7 +198,11 @@ def _enrich_remote(rw: dict, vs_info: dict | None, stale: bool) -> dict:
     # Is a local laptop terminal attached to this tmux right now? If so it's
     # focusable (reuse the VS Code focus) and the active-ring can mark it.
     att = remote.local_attachment_pid(w.get("name"), vs_info) if vs_info else None
-    w["attached"] = att is not None
+    ta = w.get("tmux_attached")
+    # The remote tmux is authoritative (a session with two same-named twins is
+    # disambiguated there); fall back to the local heuristic only when the host
+    # couldn't report attach state (ta is None).
+    w["attached"] = ta if ta is not None else (att is not None)
     w["attached_pid"] = att
     d = vscode.detect(att, vs_info) if att and vs_info else None
     w["shell_pid"] = d["shell_pid"] if d else None
@@ -494,11 +498,16 @@ def api_focus(pid: int) -> dict:
     for rw in _lab_cache["windows"]:
         if rw.get("pid") == pid:
             att = remote.local_attachment_pid(rw.get("name"), vscode._ps_parents())
-            if not att:
-                suffix = (rw.get("name") or "").removeprefix("lab-")
-                return {"ok": False, "detached": True,
-                        "error": f"No local terminal attached (tmux still on {rw.get('host')}) — run `claude-lab {suffix}` in VS Code to reattach"}
-            return vscode.focus(att) or {"ok": False, "error": "attached terminal is not a VS Code terminal"}
+            if att:
+                return vscode.focus(att) or {"ok": False, "error": "attached terminal is not a VS Code terminal"}
+            suffix = (rw.get("name") or "").removeprefix("lab-")
+            # tmux_attached True but no focusable local terminal: a client is
+            # attached elsewhere (or not in VS Code) — Reattach opens a local one.
+            if rw.get("tmux_attached"):
+                return {"ok": False,
+                        "error": f"Attached on {rw.get('host')} but not in a focusable VS Code terminal — use Reattach to open one"}
+            return {"ok": False, "detached": True,
+                    "error": f"No terminal attached (tmux still on {rw.get('host')}) — click Reattach to reopen it"}
 
     w = sessions.find_window(pid)
     if not w:
@@ -511,6 +520,39 @@ def api_focus(pid: int) -> dict:
     if not w.tty:
         return {"ok": False, "error": "no tty available for this pid"}
     return actions.focus_terminal(w.tty)
+
+
+@app.post("/api/windows/{pid}/reattach")
+def api_reattach(pid: int) -> dict:
+    """Reattach a detached remote (lab) session: open a fresh editor window and
+    run `claude-lab <suffix>` in its terminal to re-enter the tmux still alive on
+    the host. If a terminal is already attached, just focus it instead."""
+    for rw in _lab_cache["windows"]:
+        if rw.get("pid") == pid:
+            name = rw.get("name") or ""
+            suffix = name.removeprefix("lab-")
+            if not suffix:
+                return {"ok": False, "error": "not a claude-lab session"}
+            # Already attached with a focusable local terminal? Just raise it.
+            if rw.get("tmux_attached"):
+                att = remote.local_attachment_pid(name, vscode._ps_parents())
+                if att:
+                    return (vscode.focus(att)
+                            or {"ok": True, "via": "already-attached",
+                                "note": "already attached (terminal is not VS Code)"})
+            # `claude-lab <suffix>` uses the session's own (correct) name, so even
+            # if the user originally mistyped, Reattach lands on the right tmux.
+            return vscode.reattach_remote(suffix, label=name,
+                                          host=rw.get("host"), cwd=rw.get("cwd"))
+    return {"ok": False, "error": "remote session not found"}
+
+
+@app.get("/api/reattach-status/{job_id}")
+def api_reattach_status(job_id: str) -> dict:
+    """Whether a queued reattach job has been claimed by an editor window yet.
+    The dashboard polls this so it can tell the user if no window picked it up
+    (e.g. the companion extension is outdated and needs a window reload)."""
+    return {"claimed": vscode.reattach_claimed(job_id)}
 
 
 @app.post("/api/windows/{pid}/fork")

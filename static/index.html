@@ -408,6 +408,15 @@
           <button @click="openRemoteTimeline(w)"
                   class="text-xs border border-gray-200 text-gray-600 px-2 py-1 rounded hover:bg-gray-100 transition">
             Timeline</button>
+          <!-- Detached: tmux still alive on the host but no local terminal. Opens
+               a terminal in your current VS Code window via `claude-lab <suffix>`. -->
+          <button x-show="!w.attached"
+                  @click="reattachWindow(w)"
+                  :class="reattachStatuses[w.pid]==='opening' ? 'opacity-50 cursor-wait' : ''"
+                  :disabled="reattachStatuses[w.pid]==='opening'"
+                  class="text-xs border border-amber-300 text-amber-700 px-2 py-1 rounded hover:bg-amber-50 transition"
+                  title="Open a terminal in your current VS Code window and reattach this tmux Claude session">
+            <span x-text="reattachStatuses[w.pid]==='opening' ? 'Opening…' : '↻ Reattach'"></span></button>
         </div>
         <!-- Remote sessions: the per-window action buttons drive local-pid
              endpoints (and Close could SIGTERM the wrong local pid), so hide them.
@@ -726,6 +735,7 @@ function fleet() {
     memoryData: null,
     reviewStatuses: {},
     reviewVerdicts: {},
+    reattachStatuses: {},
     memoryDetail: null,
     showPlanHistory: false,
     copyButtonText: 'Copy',
@@ -967,6 +977,41 @@ function fleet() {
       const r = await fetch(`/api/windows/${pid}/focus`, { method: 'POST' });
       const d = await r.json();
       if (!d.ok) this.toast('Focus failed: ' + (d.error || ''));
+    },
+
+    async reattachWindow(w) {
+      this.reattachStatuses[w.pid] = 'opening';
+      this.toast('Reattaching ' + (w.name || '') + ' in your VS Code window…');
+      try {
+        const r = await fetch(`/api/windows/${w.pid}/reattach`, { method: 'POST' });
+        const d = await r.json();
+        if (d.ok && d.via === 'vscode-reattach') {
+          // Wait for a window's extension to claim it; warn if none does.
+          const claimed = await this._awaitReattachClaim(d.job_id);
+          if (claimed) this.toast('Reattached — terminal opened in your window');
+          else this.toast('Queued, but no VS Code window picked it up. Reload your window (⇧⌘P → Developer: Reload Window) to update the companion extension, then click Reattach again.');
+        } else if (d.ok) {
+          this.toast('Already attached — focused its terminal');
+        } else {
+          this.toast('Reattach failed: ' + (d.error || ''));
+        }
+      } catch (e) {
+        this.toast('Reattach failed: ' + e);
+      } finally {
+        this.reattachStatuses[w.pid] = null;
+      }
+    },
+
+    async _awaitReattachClaim(jobId) {
+      if (!jobId) return false;
+      for (let i = 0; i < 7; i++) {
+        await new Promise(r => setTimeout(r, 800));
+        try {
+          const r = await fetch(`/api/reattach-status/${encodeURIComponent(jobId)}`);
+          if ((await r.json()).claimed) return true;
+        } catch (e) { /* keep polling */ }
+      }
+      return false;
     },
 
     async forkWindow(pid) {

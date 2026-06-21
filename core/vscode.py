@@ -15,13 +15,30 @@ VS Code, Cursor, VSCodium, etc. — anything Electron-based with this layout.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
-REQUEST_FILE = Path.home() / ".config" / "claude-fleet" / "vscode-focus"
-ACTIVE_FILE = Path.home() / ".config" / "claude-fleet" / "vscode-active"
+_CONFIG_DIR = Path.home() / ".config" / "claude-fleet"
+REQUEST_FILE = _CONFIG_DIR / "vscode-focus"
+ACTIVE_FILE = _CONFIG_DIR / "vscode-active"
+# Reattach queue: the dashboard appends a job here; a freshly-opened editor
+# window's companion extension claims it and runs the command in a terminal.
+REATTACH_FILE = _CONFIG_DIR / "vscode-reattach"
+# The extension drops a claim marker here (named by job id) when it runs a job.
+REATTACH_CLAIMS_DIR = _CONFIG_DIR / "reattach-claims"
+# A job older than this is ignored by the extension (so a window opened much
+# later for unrelated reasons never runs a stale reattach).
+REATTACH_TTL_S = 120
+# claude-lab session suffixes are project-derived slugs; reject anything else so
+# the string typed into the terminal can't carry shell metacharacters.
+_SUFFIX_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Reattach job ids are machine-generated to this charset (also a claim-marker
+# filename); validate before any filesystem lookup from a client-supplied id.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # An Electron pty host runs from inside the app bundle's Frameworks dir
 # (e.g. ".../Visual Studio Code 2.app/Contents/Frameworks/Code Helper (Plugin).app/...").
@@ -113,3 +130,80 @@ def focus(pid: int) -> Optional[dict]:
         except Exception:
             pass  # window stays where it is; the terminal still gets focused
     return {"ok": True, "via": "vscode", "app": app, "shell_pid": d["shell_pid"]}
+
+
+# --------------------------------------------------------------------------- #
+# Reattach a detached remote (lab) session as a terminal in the user's window.
+#
+# A detached `claude-lab` session is a tmux still alive on the remote with no
+# local terminal attached. To reattach we queue a job describing the
+# `claude-lab <suffix>` command; the companion extension, running in the
+# most-recently-focused editor window, opens a new terminal tab there and runs
+# it — that interactive terminal is the only place `claude-lab` (a shell alias)
+# exists. No new window is spawned: the terminal lands where the user already is.
+# --------------------------------------------------------------------------- #
+
+
+def _read_reattach_jobs() -> list[dict]:
+    try:
+        data = json.loads(REATTACH_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        return []
+    return [j for j in jobs if isinstance(j, dict) and j.get("id") and j.get("cmd")]
+
+
+def _write_reattach_jobs(jobs: list[dict]) -> None:
+    REATTACH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REATTACH_FILE.with_name(REATTACH_FILE.name + ".tmp")
+    tmp.write_text(json.dumps({"jobs": jobs}))
+    tmp.replace(REATTACH_FILE)  # atomic publish
+
+
+def _job_consumed(job_id: str) -> bool:
+    """A job whose claim marker exists was already run by some window."""
+    if not job_id:
+        return True
+    try:
+        return (REATTACH_CLAIMS_DIR / job_id).exists()
+    except OSError:
+        return False
+
+
+def reattach_claimed(job_id: str) -> bool:
+    """True once an editor window has claimed (opened a terminal for) this job.
+    Rejects an unsafe id rather than touching the filesystem with it."""
+    if not job_id or not _JOB_ID_RE.match(job_id):
+        return False
+    return _job_consumed(job_id)
+
+
+def queue_reattach_job(cmd: str, label: str, now_ms: Optional[int] = None) -> str:
+    """Append a reattach job and return its id. Drops jobs that are expired or
+    already consumed (claim marker present) so a stale entry can never be re-run
+    by a later window. The id is filename-safe (the extension claims it via a
+    marker file named by id)."""
+    now = now_ms if now_ms is not None else int(time.time() * 1000)
+    keep = [j for j in _read_reattach_jobs()
+            if now - int(j.get("ts", 0)) < REATTACH_TTL_S * 1000
+            and not _job_consumed(str(j.get("id", "")))]
+    jid = re.sub(r"[^A-Za-z0-9._-]", "_", f"{now}-{os.getpid()}-{label}")
+    keep.append({"id": jid, "cmd": cmd, "label": label, "ts": now})
+    _write_reattach_jobs(keep)
+    return jid
+
+
+def reattach_remote(suffix: str, label: Optional[str] = None,
+                    host: Optional[str] = None, cwd: Optional[str] = None) -> dict:
+    """Queue a reattach for the detached lab tmux `lab-<suffix>`. The companion
+    extension opens a terminal in the user's most-recently-focused window and
+    runs `claude-lab <suffix>` there. Returns a result dict."""
+    suffix = (suffix or "").strip()
+    if not _SUFFIX_RE.match(suffix):
+        return {"ok": False, "error": f"unsafe session suffix: {suffix!r}"}
+    cmd = f"claude-lab {suffix}"
+    jid = queue_reattach_job(cmd, label or f"lab-{suffix}")
+    return {"ok": True, "via": "vscode-reattach", "job_id": jid,
+            "host": host, "cmd": cmd}

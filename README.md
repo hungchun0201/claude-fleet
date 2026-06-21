@@ -158,6 +158,13 @@ expands the inline conversation + plan-history view.
 | Review | run `claude -p` review in the background; the verdict (PASS/FAIL/PARTIAL) shows on the card |
 | Close | SIGTERM (closeable sessions) |
 | Export | export a conversation doc (timeline + plan history + skill/memory summary) |
+| Reattach | **detached** remote (lab) cards only — open a terminal in your current window and re-enter the still-alive tmux via `claude-lab <suffix>` |
+
+A remote (lab) session reads **detached** when its tmux is still alive on the
+host but no local terminal is attached (you closed the terminal). **Reattach**
+opens a new terminal in your most-recently-focused editor window and runs
+`claude-lab <suffix>` there to drop you back into the running session — the
+companion extension below opens the terminal (no new window is spawned).
 
 > **Focus setup (macOS).**
 > - **Terminal.app / iTerm2** — incl. sessions inside **tmux**: works out of the box.
@@ -170,8 +177,9 @@ expands the inline conversation + plan-history view.
 >   bash scripts/install-vscode-extension.sh
 >   ```
 >   then reload the window (⇧⌘P → *Developer: Reload Window* — terminals persist).
->   It focuses the right terminal by its shell PID, and reports which terminal is
->   active so the dashboard rings it in near-real-time.
+>   It focuses the right terminal by its shell PID, reports which terminal is
+>   active so the dashboard rings it in near-real-time, and opens the **Reattach**
+>   terminal in your most-recently-focused window.
 
 ## Privacy
 
@@ -197,7 +205,7 @@ core/
   usage.py            local billable-token aggregation (5h window)
   plan_usage.py       real account limits via /api/oauth/usage (read-only, cached)
   shells.py           live background-shell inspection (process tree)
-  vscode.py           focus VS Code integrated terminals + report the active one
+  vscode.py           focus VS Code integrated terminals, report the active one, reattach detached lab sessions
   codex.py            Codex session parsing + review detection
   search.py           cross-platform ripgrep search
   actions.py          focus / fork / review / close / export
